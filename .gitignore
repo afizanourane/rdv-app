@@ -1,0 +1,54 @@
+# Environnement virtuel
+venv/
+env/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+
+# Django
+db.sqlite3
+*.log
+media/
+staticfiles/
+
+# Variables d'environnement
+.env
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# macOS
+.DS_Store
+
+# Tests
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Migrations compilées
+*.pyc
+
+# Distribution
+build/
+dist/
+
+# Cache
+.cache/
+
+# mypy
+.mypy_cache/
+
+# Ruff
+.ruff_cache/
