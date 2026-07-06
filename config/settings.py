@@ -49,6 +49,7 @@ INSTALLED_APPS = [
      # ← Commenter ou supprimer cette ligne
     'rest_framework_simplejwt.token_blacklist',
     'drf_yasg',    # ← à la place de drf_spectacular
+    'django_celery_beat',   # ← ajouter pour les planifications des messages automatiques
 
     # Notre unique application
     'rendezvous',
@@ -98,7 +99,7 @@ DATABASES = {
         'USER': 'postgres',
         'PASSWORD': '123',          # Ton mot de passe local
         'HOST': 'localhost',
-        'PORT': '5433', #'5433pip install drf-spectacular',
+        'PORT': '5432', #'5433pip install drf-spectacular',
     }
 }
 
@@ -119,13 +120,13 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 10,
+    'PAGE_SIZE': 100,
     'DEFAULT_FILTER_BACKENDS': [
         'django_filters.rest_framework.DjangoFilterBackend',
         'rest_framework.filters.SearchFilter',
         'rest_framework.filters.OrderingFilter',
     ],
-    'EXCEPTION_HANDLER': 'rendezvous.presentation.exceptions_handler.custom_exception_handler',
+    #'EXCEPTION_HANDLER': 'rendezvous.presentation.exceptions_handler.custom_exception_handler',
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
@@ -243,3 +244,27 @@ EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # DEFAULT_FROM_EMAIL  = 'Rendez-vous App <ton_email@gmail.com>'
 
 DEFAULT_FROM_EMAIL = 'Rendez-vous App <noreply@rendezvous.cm>'
+
+
+
+
+
+
+
+
+
+# ── Django-Q (remplace Celery+Redis) ─────────────────────────
+INSTALLED_APPS += ['django_q']
+
+Q_CLUSTER = {
+    'name':       'rdv_pro',
+    'workers':    2,
+    'recycle':    500,
+    'timeout':    60,
+    'compress':   True,
+    'save_limit': 250,
+    'queue_limit': 500,
+    'cpu_affinity': 1,
+    'label':      'Django Q',
+    'orm':        'default',   # ← utilise PostgreSQL, pas Redis
+}

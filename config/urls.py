@@ -1,5 +1,5 @@
 """
-config/urls.py — URLs principales CORRIGÉES
+config/urls.py
 """
 from django.contrib import admin
 from django.urls import path, include, re_path
@@ -14,9 +14,21 @@ from rendezvous.presentation.views.auth_views import (
     LoginView,
     LogoutView,
     ChangerMotDePasseView,
+    
+    
 )
 
-# Configuration Swagger
+
+from rendezvous.presentation.views.views import (
+    
+    DemanderResetMotDePasseView,
+    ResetMotDePasseView,
+    ValiderTokenResetView,
+    
+)
+
+
+# Swagger
 schema_view = get_schema_view(
     openapi.Info(
         title="API Rendez-vous",
@@ -29,28 +41,24 @@ schema_view = get_schema_view(
 )
 
 urlpatterns = [
+
     # Admin Django
     path('admin/', admin.site.urls),
 
     # ── Authentification JWT ──────────────────────────────────
-    # CORRECTION : toutes les routes auth ont le préfixe api/
     path('api/auth/login/',
-         LoginView.as_view(),
-         name='login'),
+         LoginView.as_view(), name='login'),
 
     path('api/auth/logout/',
-         LogoutView.as_view(),
-         name='logout'),
+         LogoutView.as_view(), name='logout'),
 
     path('api/auth/changer-mot-de-passe/',
-         ChangerMotDePasseView.as_view(),
-         name='changer-mot-de-passe'),
+         ChangerMotDePasseView.as_view(), name='changer-mot-de-passe'),
 
     path('api/auth/refresh/',
-         TokenRefreshView.as_view(),
-         name='token-refresh'),
+         TokenRefreshView.as_view(), name='token-refresh'),
 
-    # ── Toutes les autres routes sous /api/ ───────────────────
+    # ── Toutes les autres routes ──────────────────────────────
     path('api/', include('rendezvous.presentation.urls')),
 
     # ── Documentation Swagger ─────────────────────────────────
@@ -60,5 +68,19 @@ urlpatterns = [
     re_path(r'^api/redoc/$',
             schema_view.with_ui('redoc', cache_timeout=0),
             name='redoc'),
+
+
+     # _______Reintialisation mot passe_______
+     path('api/auth/demander-reset/',
+     DemanderResetMotDePasseView.as_view(), name='demander-reset'),
+
+     path('api/auth/reset-password/',
+     ResetMotDePasseView.as_view(), name='reset-password'),
+
+     path('api/auth/valider-token/',
+     ValiderTokenResetView.as_view(), name='valider-token'),
+
+
+     
 
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

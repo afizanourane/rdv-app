@@ -435,3 +435,67 @@ class NotificationModel(models.Model):
     def __str__(self):
         lu = '✓' if self.est_lue else '●'
         return f"{lu} {self.titre}"
+    
+
+
+
+
+class RappelModel(models.Model):
+    """Trace les rappels envoyés pour éviter les doublons."""
+
+    TYPE_CHOICES = [
+        ('24h', 'Rappel 24 heures avant'),
+        ('1h',  'Rappel 1 heure avant'),
+    ]
+    STATUT_CHOICES = [
+        ('envoye',  'Envoyé'),
+        ('echoue',  'Échoué'),
+    ]
+
+    rendezvous   = models.ForeignKey(
+        RendezVousModel, on_delete=models.CASCADE,
+        related_name='rappels'
+    )
+    type_rappel  = models.CharField(max_length=10, choices=TYPE_CHOICES)
+    email_envoye = models.EmailField()
+    statut       = models.CharField(
+        max_length=10, choices=STATUT_CHOICES, default='envoye'
+    )
+    date_envoi   = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'rappels'
+        unique_together = [['rendezvous', 'type_rappel']]
+        verbose_name = 'Rappel'
+        verbose_name_plural = 'Rappels'
+
+    def __str__(self):
+        return f"Rappel {self.type_rappel} — RDV #{self.rendezvous_id}"
+    
+
+
+
+import uuid
+
+class TokenResetModel(models.Model):
+    """Token sécurisé pour la réinitialisation de mot de passe."""
+
+    utilisateur = models.ForeignKey(
+        UtilisateurModel, on_delete=models.CASCADE,
+        related_name='tokens_reset'
+    )
+    token      = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    date_expiration = models.DateTimeField()
+    utilise    = models.BooleanField(default=False)
+    date_creation   = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table     = 'tokens_reset'
+        verbose_name = 'Token de réinitialisation'
+
+    def est_valide(self):
+        from django.utils import timezone
+        return not self.utilise and self.date_expiration > timezone.now()
+
+    def __str__(self):
+        return f"Token reset — {self.utilisateur.email}"

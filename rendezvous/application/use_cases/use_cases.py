@@ -305,6 +305,7 @@ class CreerRendezVousUseCase:
     5. Notifier les admins
     """
 
+
     def __init__(
         self,
         rdv_repo:        AbstractRendezVousRepository,
@@ -318,103 +319,129 @@ class CreerRendezVousUseCase:
         self._notif_repo      = notif_repo
 
     def execute(self, data: CreerRendezVousInput) -> RendezVousEntity:
+            # 1. Vérifier que le créneau existe et est disponible
+            creneau = self._creneau_repo.find_by_id(data.creneau_id)
+            if not creneau:
+                raise CreneauNonTrouve(data.creneau_id)
+            if not creneau.est_disponible():
+                raise CreneauNonDisponible(data.creneau_id)
 
-        # 1. Vérifier que le créneau existe et est disponible
-        creneau = self._creneau_repo.find_by_id(data.creneau_id)
-        if not creneau:
-            raise CreneauNonTrouve(data.creneau_id)
-        if not creneau.est_disponible():
-            raise CreneauNonDisponible(data.creneau_id)
+            # 2. Vérifier doublon
+            rdvs_existants = self._rdv_repo.find_by_client(data.client_id)
+            doublon = any(
+                r.creneau_id == data.creneau_id and r.statut == StatutRendezVous.EN_ATTENTE
+                for r in rdvs_existants
+            )
+            if doublon:
+                raise RendezVousDejaExistant()
 
-        # 2. Vérifier qu'il n'y a pas déjà un RDV en attente
-        rdvs_existants = self._rdv_repo.find_by_client(data.client_id)
-        doublon = any(
-            r.creneau_id == data.creneau_id and r.statut == StatutRendezVous.EN_ATTENTE
-            for r in rdvs_existants
-        )
-        if doublon:
-            raise RendezVousDejaExistant()
+            # 3. Créer le rendez-vous
+            rdv = RendezVousEntity(
+                client_id=data.client_id,
+                creneau_id=data.creneau_id,
+                description=data.description,
+            )
+            rdv_sauve = self._rdv_repo.save(rdv)
 
-        # 3. Créer le rendez-vous
-        rdv = RendezVousEntity(
-            client_id=data.client_id,
-            creneau_id=data.creneau_id,
-            description=data.description,
-        )
-        rdv_sauve = self._rdv_repo.save(rdv)
+            # 4. Historique
+            self._historique_repo.save(HistoriqueStatutEntity(
+                rendezvous_id=rdv_sauve.id,
+                ancien_statut="",
+                nouveau_statut="en_attente",
+                change_par_id=data.client_id,
+                commentaire="Rendez-vous créé par le client",
+            ))
 
-        # 4. Enregistrer dans l'historique
-        self._historique_repo.save(HistoriqueStatutEntity(
-            rendezvous_id=rdv_sauve.id,
-            ancien_statut="",
-            nouveau_statut="en_attente",
-            change_par_id=data.client_id,
-            commentaire="Rendez-vous créé par le client",
-        ))
+            # 5. Notifier les admins
+            self._notifier_admins(rdv_sauve)
 
-        # Notifier les admins (notifications internes)
-        self._notifier_admins(rdv_sauve)
+            # 6. Emails
+            self._envoyer_emails_creation(rdv_sauve, data)
 
-        # ── EMAILS ──────────────────────────────────────────────
-        self._envoyer_emails_creation(rdv_sauve, data)
-        # ────────────────────────────────────────────────────────
+            return rdv_sauve
 
-        return rdv_sauve
+    def _notifier_admins(self, rdv):
+        """Notifie les admins qu'un nouveau RDV a été créé."""
+        try:
+            from rendezvous.infrastructure.django_models.models import (
+                UtilisateurModel, NotificationModel
+            )
+            admins = UtilisateurModel.objects.filter(role='admin', is_active=True)
+            for admin in admins:
+                NotificationModel.objects.create(
+                    destinataire=admin,
+                    titre=f"📅 Nouveau RDV #{rdv.id} en attente",
+                    message="Un client vient de créer un rendez-vous en attente de confirmation.",
+                    type_notification='rendezvous',
+                    est_lue=False,
+                )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Erreur notification admin: {e}")
+
+    def _envoyer_emails_creation(self, rdv, data):
+        """Envoie les emails de confirmation de création."""
+        try:
+            from rendezvous.application.email_service import EmailService
+            EmailService().envoyer_confirmation_creation(rdv)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Erreur email création RDV: {e}")
     
 
-# Integration des emails dans les use cases
+    # Integration des emails dans les use cases
 
-def _envoyer_emails_creation(self, rdv, data):
-    """
-    Envoie les emails après la création d'un RDV.
-    Appelé séparément pour ne pas bloquer la création si l'email échoue.
-    """
-    from rendezvous.application.email_service import EmailService
-    from rendezvous.infrastructure.django_models.models import (
-        UtilisateurModel, ClientModel, CreneauModel
-    )
-    try:
-        # Récupérer les infos du client
-        client_model = ClientModel.objects.select_related(
-            'utilisateur'
-        ).get(id=data.client_id)
-        client = client_model.utilisateur
+    def _envoyer_emails_creation(self, rdv, data):
+        """
+        Envoie les emails après la création d'un RDV.
+        Appelé séparément pour ne pas bloquer la création si l'email échoue.
+        """
+        from rendezvous.application.email_service import EmailService
+        from rendezvous.infrastructure.django_models.models import (
+            UtilisateurModel, ClientModel, CreneauModel
+        )
+        try:
+            # Récupérer les infos du client
+            client_model = ClientModel.objects.select_related(
+                'utilisateur'
+            ).get(id=data.client_id)
+            client = client_model.utilisateur
 
-        # Récupérer le créneau
-        creneau = CreneauModel.objects.get(id=data.creneau_id)
+            # Récupérer le créneau
+            creneau = CreneauModel.objects.get(id=data.creneau_id)
 
-        # Email de confirmation au client
-        EmailService.email_prise_rdv(
-            client_email=client.email,
-            client_prenom=client.prenom,
-            rdv_id=rdv.id,
-            creneau_heure_debut=str(creneau.heure_debut),
-            creneau_heure_fin=str(creneau.heure_fin),
-            description=data.description,
-        )
+            # Email de confirmation au client
+            EmailService.email_prise_rdv(
+                client_email=client.email,
+                client_prenom=client.prenom,
+                rdv_id=rdv.id,
+                creneau_heure_debut=str(creneau.heure_debut),
+                creneau_heure_fin=str(creneau.heure_fin),
+                description=data.description,
+            )
 
-        # Email de notification aux admins
-        admin_emails = list(
-            UtilisateurModel.objects
-            .filter(role='admin', is_active=True)
-            .values_list('email', flat=True)
-        )
-        EmailService.email_nouveau_rdv_admin(
-            admin_emails=admin_emails,
-            rdv_id=rdv.id,
-            client_nom=client.get_full_name() if hasattr(client, 'get_full_name')
-                       else f"{client.prenom} {client.nom}",
-            client_email=client.email,
-            creneau_heure_debut=str(creneau.heure_debut),
-            creneau_heure_fin=str(creneau.heure_fin),
-            description=data.description,
-        )
-    except Exception as e:
-        # L'email ne doit jamais bloquer la création du RDV
-        import logging
-        logging.getLogger('rendezvous.securite').error(
-            f"Erreur emails création RDV #{rdv.id} : {e}"
-        )
+            # Email de notification aux admins
+            admin_emails = list(
+                UtilisateurModel.objects
+                .filter(role='admin', is_active=True)
+                .values_list('email', flat=True)
+            )
+            EmailService.email_nouveau_rdv_admin(
+                admin_emails=admin_emails,
+                rdv_id=rdv.id,
+                client_nom=client.get_full_name() if hasattr(client, 'get_full_name')
+                        else f"{client.prenom} {client.nom}",
+                client_email=client.email,
+                creneau_heure_debut=str(creneau.heure_debut),
+                creneau_heure_fin=str(creneau.heure_fin),
+                description=data.description,
+            )
+        except Exception as e:
+            # L'email ne doit jamais bloquer la création du RDV
+            import logging
+            logging.getLogger('rendezvous.securite').error(
+                f"Erreur emails création RDV #{rdv.id} : {e}"
+            )
     
 
 

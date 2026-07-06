@@ -186,16 +186,15 @@ class HistoriqueStatutSerializer(serializers.ModelSerializer):
 class DocumentSerializer(serializers.ModelSerializer):
     class Meta:
         model  = DocumentModel
-        fields = ['id', 'fichier', 'type_document', 'nom', 'date_upload']
-        read_only_fields = ['date_upload']
+        fields = ['id', 'nom', 'type_document', 'date_upload']
 
 
 class RendezVousSerializer(serializers.ModelSerializer):
-    """Affiche un rendez-vous complet avec historique et documents."""
     historique     = HistoriqueStatutSerializer(many=True, read_only=True)
     documents      = DocumentSerializer(many=True, read_only=True)
-    statut_display = serializers.CharField(source='get_statut_display', read_only=True)
     client_nom     = serializers.SerializerMethodField()
+    statut_display = serializers.SerializerMethodField()
+    traite_par_nom = serializers.SerializerMethodField()
 
     class Meta:
         model  = RendezVousModel
@@ -203,7 +202,7 @@ class RendezVousSerializer(serializers.ModelSerializer):
             'id', 'client', 'client_nom', 'creneau',
             'confirmation', 'statut', 'statut_display',
             'description', 'date_creation', 'date_modification',
-            'traite_par', 'motif_refus',
+            'traite_par', 'traite_par_nom', 'motif_refus',
             'historique', 'documents',
         ]
         read_only_fields = [
@@ -212,8 +211,27 @@ class RendezVousSerializer(serializers.ModelSerializer):
         ]
 
     def get_client_nom(self, obj):
-        return f"{obj.client.utilisateur.prenom} {obj.client.utilisateur.nom}"
+        try:
+            return f"{obj.client.utilisateur.prenom} {obj.client.utilisateur.nom}"
+        except Exception:
+            return f"Client #{obj.client_id}"
 
+    def get_statut_display(self, obj):
+        return {
+            'en_attente': 'En attente',
+            'confirme':   'Confirmé',
+            'refuse':     'Refusé',
+            'annule':     'Annulé',
+            'termine':    'Terminé',
+        }.get(obj.statut, obj.statut)
+
+    def get_traite_par_nom(self, obj):
+        try:
+            if obj.traite_par and obj.traite_par.utilisateur:
+                return f"{obj.traite_par.utilisateur.prenom} {obj.traite_par.utilisateur.nom}"
+            return None
+        except Exception:
+            return None
 
 class CreerRendezVousSerializer(serializers.Serializer):
     """Valide les données de création d'un rendez-vous."""
