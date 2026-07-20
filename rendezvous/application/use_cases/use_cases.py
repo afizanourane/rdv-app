@@ -18,6 +18,11 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import List, Optional
 
+
+from rendezvous.infrastructure.django_models.models import AdministrateurModel as AM
+
+
+
 from rendezvous.domain.entities.utilisateur import (
     UtilisateurEntity, Role, ClientEntity, PersonnelEntity, AdministrateurEntity
 )
@@ -482,34 +487,105 @@ class ConfirmerRendezVousUseCase:
         self._creneau_repo    = creneau_repo
         self._notif_repo      = notif_repo
 
-    def execute(self, rdv_id: int, admin_id: int, commentaire: str = "") -> RendezVousEntity:
-        # Récupérer le rendez-vous
+    def execute(self, rdv_id: int, admin_id: int, commentaire: str = "", user_id: int = None) -> RendezVousEntity:
         rdv = self._rdv_repo.find_by_id(rdv_id)
         if not rdv:
             raise RendezVousNonTrouve(rdv_id)
 
         ancien_statut = rdv.statut.value
-
-        # La règle métier est dans l'entité Domain
+       # admin_id peut être None si c'est un personnel qui confirme
         rdv.confirmer(admin_id)
 
-        # Marquer le créneau comme réservé
         creneau = self._creneau_repo.find_by_id(rdv.creneau_id)
         if creneau:
             creneau.reserver()
             self._creneau_repo.update(creneau)
 
-        # Sauvegarder et historiser
         rdv_maj = self._rdv_repo.update(rdv)
+
+        # Utiliser user_id si fourni, sinon résoudre depuis admin_id
+        change_par = user_id
+        if not change_par:
+            try:
+                from rendezvous.infrastructure.django_models.models import AdministrateurModel as AM
+                change_par = AM.objects.get(id=admin_id).utilisateur_id
+            except Exception:
+                change_par = admin_id
+
         self._historique_repo.save(HistoriqueStatutEntity(
-            rendezvous_id=rdv_id,
+            rendezvous_id=rdv_maj.id,
             ancien_statut=ancien_statut,
             nouveau_statut="confirme",
-            change_par_id=admin_id,
+            change_par_id=change_par,
             commentaire=commentaire or "Confirmé par l'administrateur",
         ))
 
-        # Notifier le client
+        # ← AJOUTER ICI — Notifier le client
+        try:
+            from rendezvous.infrastructure.django_models.models import (
+                RendezVousModel, NotificationModel
+            )
+            rdv_model = RendezVousModel.objects.select_related(
+                'client__utilisateur'
+            ).get(id=rdv_maj.id)
+
+            # Notification au client
+            # Notification au client
+            NotificationModel.objects.create(
+                destinataire=rdv_model.client.utilisateur,
+                titre=f"✅ Rendez-vous #{rdv_maj.id} confirmé !",
+                message=(
+                    f"Votre rendez-vous #{rdv_maj.id} a été confirmé.\n\n"
+                    f"📋 Détails :\n"
+                    f"• Personnel : {rdv_model.creneau.personnel.utilisateur.prenom} "
+                    f"{rdv_model.creneau.personnel.utilisateur.nom}\n"
+                    f"• Créneau : {rdv_model.creneau.heure_debut.strftime('%H:%M')} – "
+                    f"{rdv_model.creneau.heure_fin.strftime('%H:%M')}\n"
+                    f"• Service : {rdv_model.service.nom if rdv_model.service else 'Non précisé'}\n"
+                    f"• Montant : {int(rdv_model.prix_snapshot):,} FCFA\n\n"
+                    f"💳 Vous pouvez maintenant effectuer le paiement depuis votre espace client."
+                ) if rdv_model.prix_snapshot else (
+                    f"Votre rendez-vous #{rdv_maj.id} a été confirmé.\n\n"
+                    f"📋 Détails :\n"
+                    f"• Personnel : {rdv_model.creneau.personnel.utilisateur.prenom} "
+                    f"{rdv_model.creneau.personnel.utilisateur.nom}\n"
+                    f"• Créneau : {rdv_model.creneau.heure_debut.strftime('%H:%M')} – "
+                    f"{rdv_model.creneau.heure_fin.strftime('%H:%M')}\n"
+                    f"• Service : {rdv_model.service.nom if rdv_model.service else 'Non précisé'}\n\n"
+                    f"💳 Vous pouvez maintenant effectuer le paiement depuis votre espace client."
+                ),
+                type_notification='rendezvous',
+                est_lue=False,
+            )
+
+            # Notifier le personnel si c'est l'admin qui a confirmé
+            if admin_id:
+                try:
+                    personnel = rdv_model.creneau.personnel.utilisateur
+                    NotificationModel.objects.create(
+                        destinataire=personnel,
+                        titre=f" RDV #{rdv_maj.id} confirmé par l'admin",
+                        message=(
+                            f"Le rendez-vous #{rdv_maj.id} a été confirmé par l'administrateur.\n\n"
+                            f"📋 Détails :\n"
+                            f"• Client : {rdv_model.client.utilisateur.prenom} "
+                            f"{rdv_model.client.utilisateur.nom}\n"
+                            f"• Créneau : {rdv_model.creneau.heure_debut.strftime('%H:%M')} – "
+                            f"{rdv_model.creneau.heure_fin.strftime('%H:%M')}\n"
+                            f"• Service : {rdv_model.service.nom if rdv_model.service else 'Non précisé'}"
+                        ),
+                        type_notification='rendezvous',
+                        est_lue=False,
+                    )
+                except Exception:
+                    pass
+
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Erreur notification confirmation: {e}")
+
+        return rdv_maj
+
         self._notif_repo.save(NotificationEntity(
             destinataire_id=rdv.client_id,
             titre="Rendez-vous confirmé ✅",
@@ -517,38 +593,34 @@ class ConfirmerRendezVousUseCase:
             type_notification="rendezvous",
         ))
 
-
-        # ── EMAIL ────────────────────────────────────────────────
         self._envoyer_email_confirmation(rdv_maj, rdv_id)
-        # ────────────────────────────────────────────────────────
-
         return rdv_maj
 
 
-def _envoyer_email_confirmation(self, rdv, rdv_id):
-    """Envoie l'email de confirmation au client."""
-    from rendezvous.application.email_service import EmailService
-    from rendezvous.infrastructure.django_models.models import (
-        ClientModel, CreneauModel
-    )
-    try:
-        client_model = ClientModel.objects.select_related(
-            'utilisateur'
-        ).get(id=rdv.client_id)
-        creneau = CreneauModel.objects.get(id=rdv.creneau_id)
+    def _envoyer_email_confirmation(self, rdv, rdv_id):
+        """Envoie l'email de confirmation au client."""
+        from rendezvous.application.email_service import EmailService
+        from rendezvous.infrastructure.django_models.models import (
+            ClientModel, CreneauModel
+        )
+        try:
+            client_model = ClientModel.objects.select_related(
+                'utilisateur'
+            ).get(id=rdv.client_id)
+            creneau = CreneauModel.objects.get(id=rdv.creneau_id)
 
-        EmailService.email_rdv_confirme(
-            client_email=client_model.utilisateur.email,
-            client_prenom=client_model.utilisateur.prenom,
-            rdv_id=rdv_id,
-            creneau_heure_debut=str(creneau.heure_debut),
-            creneau_heure_fin=str(creneau.heure_fin),
-        )
-    except Exception as e:
-        import logging
-        logging.getLogger('rendezvous.securite').error(
-            f"Erreur email confirmation RDV #{rdv_id} : {e}"
-        )
+            EmailService.email_rdv_confirme(
+                client_email=client_model.utilisateur.email,
+                client_prenom=client_model.utilisateur.prenom,
+                rdv_id=rdv_id,
+                creneau_heure_debut=str(creneau.heure_debut),
+                creneau_heure_fin=str(creneau.heure_fin),
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger('rendezvous.securite').error(
+                f"Erreur email confirmation RDV #{rdv_id} : {e}"
+            )
 
 
 
@@ -565,21 +637,29 @@ class RefuserRendezVousUseCase:
         self._historique_repo = historique_repo
         self._notif_repo      = notif_repo
 
-    def execute(self, rdv_id: int, admin_id: int, motif: str) -> RendezVousEntity:
+    def execute(self, rdv_id: int, admin_id: int, motif: str = "", user_id: int = None) -> RendezVousEntity:
         rdv = self._rdv_repo.find_by_id(rdv_id)
         if not rdv:
             raise RendezVousNonTrouve(rdv_id)
 
         ancien_statut = rdv.statut.value
-        rdv.refuser(admin_id, motif)     # règle métier dans Domain
-
+        rdv.refuser(admin_id, motif)
         rdv_maj = self._rdv_repo.update(rdv)
+
+        change_par = user_id
+        if not change_par:
+            try:
+                from rendezvous.infrastructure.django_models.models import AdministrateurModel as AM
+                change_par = AM.objects.get(id=admin_id).utilisateur_id
+            except Exception:
+                change_par = admin_id
+
         self._historique_repo.save(HistoriqueStatutEntity(
-            rendezvous_id=rdv_id,
+            rendezvous_id=rdv_maj.id,
             ancien_statut=ancien_statut,
             nouveau_statut="refuse",
-            change_par_id=admin_id,
-            commentaire=motif,
+            change_par_id=change_par,
+            commentaire=motif or "Refusé par l'administrateur",
         ))
 
         self._notif_repo.save(NotificationEntity(
@@ -588,10 +668,6 @@ class RefuserRendezVousUseCase:
             message=f"Votre RDV #{rdv_id} a été refusé. Motif : {motif}",
             type_notification="rendezvous",
         ))
-
-        # ── EMAIL ────────────────────────────────────────────────
-        self._envoyer_email_refus(rdv_maj, rdv_id, motif)
-        # ────────────────────────────────────────────────────────
 
         return rdv_maj
 
@@ -720,8 +796,18 @@ class InitierPaiementUseCase:
         self, rendezvous_id: int, montant: Decimal, mode_paiement: str
     ) -> PaiementEntity:
         # Le RDV doit être confirmé
+        # Le RDV doit être confirmé
         rdv = self._rdv_repo.find_by_id(rendezvous_id)
         if not rdv or rdv.statut != StatutRendezVous.CONFIRME:
+            raise RendezVousNonConfirme()
+
+        # Vérifier que le paiement est autorisé (verrou de sécurité)
+        from rendezvous.infrastructure.django_models.models import RendezVousModel
+        try:
+            rdv_model = RendezVousModel.objects.get(id=rendezvous_id)
+            if not rdv_model.paiement_autorise:
+                raise RendezVousNonConfirme()
+        except RendezVousModel.DoesNotExist:
             raise RendezVousNonConfirme()
 
         # Pas de double paiement
@@ -785,31 +871,31 @@ class ConfirmerPaiementUseCase:
         return paiement_maj
 
 
-def _envoyer_email_paiement(self, paiement, reference):
-    """Envoie l'email de reçu de paiement."""
-    from rendezvous.application.email_service import EmailService
-    from rendezvous.infrastructure.django_models.models import (
-        ClientModel, CreneauModel, RendezVousModel
-    )
-    try:
-        rdv_model = RendezVousModel.objects.select_related(
-            'client__utilisateur', 'creneau'
-        ).get(id=paiement.rendezvous_id)
+    def _envoyer_email_paiement(self, paiement, reference):
+        """Envoie l'email de reçu de paiement."""
+        from rendezvous.application.email_service import EmailService
+        from rendezvous.infrastructure.django_models.models import (
+            ClientModel, CreneauModel, RendezVousModel
+        )
+        try:
+            rdv_model = RendezVousModel.objects.select_related(
+                'client__utilisateur', 'creneau'
+            ).get(id=paiement.rendezvous_id)
 
-        EmailService.email_paiement_confirme(
-            client_email=rdv_model.client.utilisateur.email,
-            client_prenom=rdv_model.client.utilisateur.prenom,
-            rdv_id=rdv_model.id,
-            montant=float(paiement.montant),
-            reference_transaction=reference,
-            creneau_heure_debut=str(rdv_model.creneau.heure_debut),
-            creneau_heure_fin=str(rdv_model.creneau.heure_fin),
-        )
-    except Exception as e:
-        import logging
-        logging.getLogger('rendezvous.securite').error(
-            f"Erreur email paiement RDV #{paiement.rendezvous_id} : {e}"
-        )
+            EmailService.email_paiement_confirme(
+                client_email=rdv_model.client.utilisateur.email,
+                client_prenom=rdv_model.client.utilisateur.prenom,
+                rdv_id=rdv_model.id,
+                montant=float(paiement.montant),
+                reference_transaction=reference,
+                creneau_heure_debut=str(rdv_model.creneau.heure_debut),
+                creneau_heure_fin=str(rdv_model.creneau.heure_fin),
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger('rendezvous.securite').error(
+                f"Erreur email paiement RDV #{paiement.rendezvous_id} : {e}"
+            )
 
 
 class RembourserPaiementUseCase:

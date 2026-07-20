@@ -14,6 +14,8 @@ from rendezvous.presentation.views.auth_views import (
     LoginView,
     LogoutView,
     ChangerMotDePasseView,
+    VerifierOtpView,
+    Activer2FAView,
     
     
 )
@@ -79,6 +81,11 @@ urlpatterns = [
 
      path('api/auth/valider-token/',
      ValiderTokenResetView.as_view(), name='valider-token'),
+
+
+     #__________Authentification a double facteur______________
+     path('api/auth/verifier-otp/', VerifierOtpView.as_view(), name='verifier-otp'),
+     path('api/auth/activer-2fa/',  Activer2FAView.as_view(),  name='activer-2fa'),
 
 
      

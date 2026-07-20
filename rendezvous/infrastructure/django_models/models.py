@@ -15,6 +15,10 @@ from django.contrib.auth.models import (
     AbstractBaseUser, BaseUserManager, PermissionsMixin
 )
 from django.db import models
+import os
+import uuid
+import random
+import string
 
 
 # =============================================================
@@ -44,6 +48,12 @@ class UtilisateurManager(BaseUserManager):
         return self.create_user(email, password, **extra_fields)
 
 
+def chemin_photo_profil(instance, filename):
+    ext = filename.split('.')[-1].lower()
+    nom = f"profil_{instance.id}.{ext}"
+    return os.path.join('photos_profil', nom)
+
+
 class UtilisateurModel(AbstractBaseUser, PermissionsMixin):
     """
     Table SQL 'utilisateurs' — remplace le User Django par défaut.
@@ -61,10 +71,16 @@ class UtilisateurModel(AbstractBaseUser, PermissionsMixin):
     email     = models.EmailField(unique=True)
     telephone = models.CharField(max_length=20, blank=True)
     role      = models.CharField(max_length=20, choices=ROLE_CHOICES, default='client')
+    photo     = models.ImageField(
+        upload_to=chemin_photo_profil,
+        null=True, blank=True,
+        verbose_name='Photo de profil',
+    )
+    deux_fa_active = models.BooleanField(default=False, verbose_name='2FA activée')
 
     # Champs requis par Django
-    is_active  = models.BooleanField(default=True)
-    is_staff   = models.BooleanField(default=False)
+    is_active   = models.BooleanField(default=True)
+    is_staff    = models.BooleanField(default=False)
     date_joined = models.DateTimeField(auto_now_add=True)
 
     objects = UtilisateurManager()
@@ -74,12 +90,16 @@ class UtilisateurModel(AbstractBaseUser, PermissionsMixin):
     REQUIRED_FIELDS = ['nom', 'prenom']
 
     class Meta:
-        db_table = 'utilisateurs'   # nom réel de la table en PostgreSQL
+        db_table     = 'utilisateurs'   # nom réel de la table en PostgreSQL
         verbose_name = 'Utilisateur'
 
     def __str__(self):
         return f"{self.prenom} {self.nom} ({self.role})"
 
+
+# =============================================================
+#   PROFILS PAR RÔLE
+# =============================================================
 
 class ClientModel(models.Model):
     """Table SQL 'clients' — profil spécifique au rôle Client."""
@@ -87,7 +107,7 @@ class ClientModel(models.Model):
     # OneToOne : 1 client = 1 utilisateur, pas plus
     utilisateur = models.OneToOneField(
         UtilisateurModel,
-        on_delete=models.CASCADE,        # si l'utilisateur est supprimé → le client aussi
+        on_delete=models.CASCADE,       # si l'utilisateur est supprimé → le client aussi
         related_name='profil_client'
     )
     adresse = models.TextField(blank=True)
@@ -127,17 +147,31 @@ class PersonnelModel(models.Model):
     poste = models.CharField(max_length=100)
 
     # SET_NULL : si l'entreprise est supprimée, le personnel reste sans entreprise
+    # null=True, blank=True : un personnel peut être indépendant (sans entreprise)
     entreprise = models.ForeignKey(
         'EntrepriseModel',
         on_delete=models.SET_NULL,
         null=True, blank=True,
         related_name='personnels'
     )
+
     domaine = models.ForeignKey(
         'DomaineModel',
         on_delete=models.SET_NULL,
         null=True, blank=True,
         related_name='personnels_domaine'
+    )
+
+    # ManyToMany : un personnel peut proposer plusieurs services
+    # et un même service peut être proposé par plusieurs personnels
+    # Ex : Dr. Dupont propose "Consultation" et "Suivi post-op"
+    # blank=True : au moment de la création, aucun service n'est obligatoire
+    # related_name='personnels' → depuis un service : service.personnels.all()
+    #   donne la liste de tous les personnels qui proposent ce service
+    services_proposes = models.ManyToManyField(
+        'ServiceModel',
+        blank=True,
+        related_name='personnels'
     )
 
     class Meta:
@@ -152,7 +186,11 @@ class PersonnelModel(models.Model):
 # =============================================================
 
 class DomaineModel(models.Model):
-    """Table SQL 'domaines'."""
+    """
+    Table SQL 'domaines'.
+    Catégorie métier d'une entreprise.
+    Ex : Santé, Beauté, Juridique, Informatique.
+    """
 
     nom_domaine = models.CharField(max_length=150, unique=True)
     description = models.TextField(blank=True)
@@ -166,7 +204,10 @@ class DomaineModel(models.Model):
 
 
 class EntrepriseModel(models.Model):
-    """Table SQL 'entreprises'."""
+    """
+    Table SQL 'entreprises'.
+    Une entreprise appartient à un domaine et propose des services.
+    """
 
     nom_entreprise = models.CharField(max_length=200)
     adresse        = models.TextField()
@@ -176,7 +217,8 @@ class EntrepriseModel(models.Model):
     est_active     = models.BooleanField(default=True)
     date_creation  = models.DateTimeField(auto_now_add=True)
 
-    # PROTECT : on ne peut pas supprimer un domaine qui a des entreprises
+    # PROTECT : on ne peut pas supprimer un domaine qui a encore des entreprises
+    # Oblige à réassigner les entreprises avant de supprimer un domaine
     domaine = models.ForeignKey(
         DomaineModel,
         on_delete=models.PROTECT,
@@ -190,6 +232,58 @@ class EntrepriseModel(models.Model):
     def __str__(self):
         return self.nom_entreprise
 
+
+# =============================================================
+#   SERVICE
+# =============================================================
+
+class ServiceModel(models.Model):
+    """
+    Table SQL 'services'.
+    Un service est une prestation précise proposée par une entreprise.
+    Ex : 'Consultation générale', 'Coupe femme', 'Audit comptable'.
+    Chaque service a un prix fixé à l'avance par l'entreprise.
+    """
+
+    nom         = models.CharField(max_length=200)
+    # TextField : description longue sans limite fixe
+    description = models.TextField(blank=True)
+
+    # DecimalField pour l'argent : évite les erreurs d'arrondi du float
+    # max_digits=10 → jusqu'à 99 999 999 FCFA
+    # decimal_places=2 → centimes inclus (ex : 5000.00 FCFA)
+    prix = models.DecimalField(max_digits=10, decimal_places=2)
+
+    # Durée estimée du service en minutes (ex : 30, 60, 90)
+    # Utile pour calculer automatiquement les créneaux disponibles
+    duree_minutes = models.PositiveIntegerField(default=30)
+
+    # CASCADE : si l'entreprise est supprimée, ses services le sont aussi
+    # Logique : sans entreprise, le service n'a plus de raison d'exister
+    # related_name='services' → depuis une entreprise : entreprise.services.all()
+    entreprise = models.ForeignKey(
+        EntrepriseModel,
+        on_delete=models.CASCADE,
+        related_name='services'
+    )
+
+    # Un service peut être désactivé sans être supprimé
+    # Ex : service saisonnier ou temporairement indisponible
+    est_actif     = models.BooleanField(default=True)
+    date_creation = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table     = 'services'
+        ordering     = ['nom']
+        verbose_name = 'Service'
+
+    def __str__(self):
+        return f"{self.nom} — {self.prix} FCFA ({self.entreprise})"
+
+
+# =============================================================
+#   AVIS
+# =============================================================
 
 class AvisModel(models.Model):
     """Table SQL 'avis' — évaluations des entreprises."""
@@ -206,7 +300,7 @@ class AvisModel(models.Model):
 
     class Meta:
         db_table = 'avis'
-        # Un client ne peut laisser qu'un avis par entreprise
+        # Un client ne peut laisser qu'un seul avis par entreprise
         unique_together = ('entreprise', 'client')
 
 
@@ -234,7 +328,7 @@ class PlageCreneauModel(models.Model):
 
 
 class CreneauModel(models.Model):
-    """Table SQL 'creneaux' — créneau individuel."""
+    """Table SQL 'creneaux' — créneau individuel d'un personnel."""
 
     STATUT_CHOICES = [
         ('disponible', 'Disponible'),
@@ -243,6 +337,8 @@ class CreneauModel(models.Model):
         ('termine',    'Terminé'),
     ]
 
+    # Le créneau appartient à un personnel précis
+    # CASCADE : si le personnel est supprimé, ses créneaux le sont aussi
     personnel   = models.ForeignKey(
         PersonnelModel, on_delete=models.CASCADE, related_name='creneaux'
     )
@@ -285,10 +381,22 @@ class RendezVousModel(models.Model):
     client = models.ForeignKey(
         ClientModel, on_delete=models.CASCADE, related_name='rendezvous'
     )
-    # PROTECT : ne pas supprimer un créneau réservé
+
+    # PROTECT : interdit de supprimer un créneau déjà réservé
     creneau = models.ForeignKey(
         CreneauModel, on_delete=models.PROTECT, related_name='rendezvous'
     )
+
+    # Le service choisi par le client au moment de la demande
+    # SET_NULL : si le service est supprimé plus tard, le RDV reste intact
+    # null=True, blank=True : compatibilité avec les anciens RDV sans service
+    service = models.ForeignKey(
+        ServiceModel,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='rendezvous'
+    )
+
     confirmation      = models.BooleanField(default=False)
     statut            = models.CharField(
         max_length=20, choices=STATUT_CHOICES, default='en_attente'
@@ -304,27 +412,54 @@ class RendezVousModel(models.Model):
     )
     motif_refus = models.TextField(blank=True)
 
+    # Snapshot du prix au moment de la prise de RDV
+    # IMPORTANT : on ne lit pas service.prix directement car le prix
+    # peut changer dans le futur. Ce champ fige le prix comme un devis.
+    # null=True, blank=True : compatibilité avec les anciens RDV
+    prix_snapshot = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True, blank=True,
+        verbose_name='Prix au moment du RDV'
+    )
+
+    # Verrou de paiement — False par défaut (paiement bloqué)
+    # Passe à True UNIQUEMENT quand le personnel confirme le RDV
+    # L'use case EffectuerPaiementUseCase vérifie ce champ avant tout traitement
+    # False → RDV en attente ou refusé → paiement impossible
+    # True  → RDV confirmé par le personnel → paiement autorisé
+    paiement_autorise = models.BooleanField(
+        default=False,
+        verbose_name='Paiement autorisé'
+    )
+
     class Meta:
-        db_table = 'rendezvous'
-        ordering = ['-date_creation']
+        db_table     = 'rendezvous'
+        ordering     = ['-date_creation']
         verbose_name = 'Rendez-vous'
 
     def __str__(self):
         return f"RDV #{self.pk} — {self.client} ({self.statut})"
 
 
+# =============================================================
+#   HISTORIQUE ET DOCUMENTS
+# =============================================================
+
 class HistoriqueStatutModel(models.Model):
     """
     Table SQL 'historique_statuts'.
     Enregistrement immuable — jamais modifié, uniquement ajouté.
+    Trace chaque changement de statut d'un RDV.
     """
-    rendezvous    = models.ForeignKey(
+
+    rendezvous      = models.ForeignKey(
         RendezVousModel, on_delete=models.CASCADE, related_name='historique'
     )
-    ancien_statut  = models.CharField(max_length=20)
-    nouveau_statut = models.CharField(max_length=20)
+    ancien_statut   = models.CharField(max_length=20)
+    nouveau_statut  = models.CharField(max_length=20)
     date_changement = models.DateTimeField(auto_now_add=True)
-    change_par     = models.ForeignKey(
+    change_par      = models.ForeignKey(
         UtilisateurModel, on_delete=models.SET_NULL, null=True
     )
     commentaire = models.TextField(blank=True)
@@ -424,9 +559,9 @@ class NotificationModel(models.Model):
     type_notification = models.CharField(
         max_length=20, choices=TYPE_CHOICES, default='systeme'
     )
-    est_lue           = models.BooleanField(default=False)
-    date_creation     = models.DateTimeField(auto_now_add=True)
-    date_lecture      = models.DateTimeField(null=True, blank=True)
+    est_lue      = models.BooleanField(default=False)
+    date_creation = models.DateTimeField(auto_now_add=True)
+    date_lecture  = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = 'notifications'
@@ -435,10 +570,11 @@ class NotificationModel(models.Model):
     def __str__(self):
         lu = '✓' if self.est_lue else '●'
         return f"{lu} {self.titre}"
-    
 
 
-
+# =============================================================
+#   RAPPELS ET SÉCURITÉ
+# =============================================================
 
 class RappelModel(models.Model):
     """Trace les rappels envoyés pour éviter les doublons."""
@@ -448,45 +584,152 @@ class RappelModel(models.Model):
         ('1h',  'Rappel 1 heure avant'),
     ]
     STATUT_CHOICES = [
-        ('envoye',  'Envoyé'),
-        ('echoue',  'Échoué'),
+        ('envoye', 'Envoyé'),
+        ('echoue', 'Échoué'),
     ]
 
     rendezvous   = models.ForeignKey(
-        RendezVousModel, on_delete=models.CASCADE,
-        related_name='rappels'
+        RendezVousModel, on_delete=models.CASCADE, related_name='rappels'
     )
     type_rappel  = models.CharField(max_length=10, choices=TYPE_CHOICES)
     email_envoye = models.EmailField()
     statut       = models.CharField(
         max_length=10, choices=STATUT_CHOICES, default='envoye'
     )
-    date_envoi   = models.DateTimeField(auto_now_add=True)
+    date_envoi = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = 'rappels'
+        db_table        = 'rappels'
+        # Un seul rappel de chaque type par RDV — évite les doublons
         unique_together = [['rendezvous', 'type_rappel']]
-        verbose_name = 'Rappel'
+        verbose_name        = 'Rappel'
         verbose_name_plural = 'Rappels'
 
     def __str__(self):
         return f"Rappel {self.type_rappel} — RDV #{self.rendezvous_id}"
+
+# =============================================================
+#   CHAT — MESSAGERIE INTERNE
+# =============================================================
+
+class ConversationModel(models.Model):
+    """
+    Table SQL 'conversations'.
+    Une conversation regroupe les messages entre 2 participants.
+    2 types possibles :
+    - 'client_personnel' : client discute avec le personnel d'un RDV
+    - 'admin_personnel'  : admin discute avec un personnel
+    """
+    TYPE_CHOICES = [
+        ('client_personnel', 'Client ↔ Personnel'),
+        ('admin_personnel',  'Admin ↔ Personnel'),
+    ]
+
+    type_conversation = models.CharField(
+        max_length=20,
+        choices=TYPE_CHOICES,
+        default='client_personnel'
+    )
+
+    # Lié à un RDV précis pour les conversations client ↔ personnel
+    # null si c'est une conversation admin ↔ personnel
+    rdv = models.ForeignKey(
+        RendezVousModel,
+        on_delete=models.CASCADE,
+        null=True, blank=True,
+        related_name='conversations'
+    )
+
+    # Participants — selon le type, l'un ou l'autre sera null
+    # Client : présent si type = 'client_personnel'
+    client = models.ForeignKey(
+        ClientModel,
+        on_delete=models.CASCADE,
+        null=True, blank=True,
+        related_name='conversations'
+    )
+
+    # Personnel : toujours présent
+    personnel = models.ForeignKey(
+        PersonnelModel,
+        on_delete=models.CASCADE,
+        related_name='conversations'
+    )
+
+    # Admin : présent si type = 'admin_personnel'
+    admin = models.ForeignKey(
+        AdministrateurModel,
+        on_delete=models.CASCADE,
+        null=True, blank=True,
+        related_name='conversations'
+    )
+
+    date_creation     = models.DateTimeField(auto_now_add=True)
+    date_modification = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table  = 'conversations'
+        ordering  = ['-date_modification']
+        # Un seul fil de discussion par RDV entre client et personnel
+        unique_together = [['rdv', 'client', 'personnel']]
+        verbose_name = 'Conversation'
+
+    def __str__(self):
+        if self.type_conversation == 'client_personnel':
+            return f"Conv Client↔Personnel — RDV #{self.rdv_id}"
+        return f"Conv Admin↔Personnel — {self.personnel}"
+
+
+class MessageModel(models.Model):
+    """
+    Table SQL 'messages'.
+    Un message appartient à une conversation.
+    Immuable : jamais modifié, uniquement ajouté.
+    """
+
+    # La conversation à laquelle appartient ce message
+    conversation = models.ForeignKey(
+        ConversationModel,
+        on_delete=models.CASCADE,
+        related_name='messages'
+    )
+
+    # Qui a envoyé ce message
+    expediteur = models.ForeignKey(
+        UtilisateurModel,
+        on_delete=models.CASCADE,
+        related_name='messages_envoyes'
+    )
+
+    # Le contenu du message
+    contenu = models.TextField()
+
+    # False → message non lu par le destinataire
+    # True  → message lu
+    est_lu = models.BooleanField(default=False)
+
+    # Généré automatiquement à la création — jamais modifié
+    date_envoi = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'messages'
+        # Du plus ancien au plus récent pour l'affichage
+        ordering  = ['date_envoi']
+        verbose_name = 'Message'
+
+    def __str__(self):
+        return f"Msg de {self.expediteur} — {self.date_envoi.strftime('%d/%m %H:%M')}"
     
-
-
-
-import uuid
-
 class TokenResetModel(models.Model):
     """Token sécurisé pour la réinitialisation de mot de passe."""
 
     utilisateur = models.ForeignKey(
-        UtilisateurModel, on_delete=models.CASCADE,
-        related_name='tokens_reset'
+        UtilisateurModel, on_delete=models.CASCADE, related_name='tokens_reset'
     )
-    token      = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    # uuid4 : token unique aléatoire, impossible à deviner
+    token           = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     date_expiration = models.DateTimeField()
-    utilise    = models.BooleanField(default=False)
+    utilise         = models.BooleanField(default=False)
     date_creation   = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -499,3 +742,32 @@ class TokenResetModel(models.Model):
 
     def __str__(self):
         return f"Token reset — {self.utilisateur.email}"
+
+
+def generer_code_otp():
+    """Génère un code numérique aléatoire à 6 chiffres."""
+    return ''.join(random.choices(string.digits, k=6))
+
+
+class CodeOtpModel(models.Model):
+    """Code OTP à 6 chiffres pour la 2FA."""
+
+    utilisateur = models.ForeignKey(
+        UtilisateurModel, on_delete=models.CASCADE, related_name='codes_otp'
+    )
+    # default=generer_code_otp : appelé à chaque création d'instance
+    code            = models.CharField(max_length=6, default=generer_code_otp)
+    date_expiration = models.DateTimeField()
+    utilise         = models.BooleanField(default=False)
+    date_creation   = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table     = 'codes_otp'
+        verbose_name = 'Code OTP'
+
+    def est_valide(self):
+        from django.utils import timezone
+        return not self.utilise and self.date_expiration > timezone.now()
+
+    def __str__(self):
+        return f"OTP {self.code} — {self.utilisateur.email}"

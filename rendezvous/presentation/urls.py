@@ -4,105 +4,161 @@ NE PAS mettre les routes auth ici — elles sont dans config/urls.py
 """
 from django.urls import path
 from rendezvous.presentation.views.views import (
+    # ── Utilisateurs ──────────────────────────────────────────
     InscriptionView, MonProfilView,
     UtilisateurListView, StatistiquesView,
+    UtilisateurDetailView, CreerUtilisateurView,
+    ActiverDesactiverUtilisateurView,
+
+    # ── Domaines & Entreprises ────────────────────────────────
     DomaineListView, EntrepriseListView, AvisView,
+
+    # ── Services (NOUVEAU) ────────────────────────────────────
+    ServiceListView, PersonnelParServiceView,
+
+    # ── Créneaux ─────────────────────────────────────────────
     CreneauListView, CreneauDisponiblesView,
+    CreneauxParPersonnelView,
+
+    # ── Rendez-vous ───────────────────────────────────────────
     RendezVousListView, RendezVousDetailView,
     TraiterRendezVousView, AnnulerRendezVousView,
     TableauDeBordView,
+
+    # ── Paiements ─────────────────────────────────────────────
     PaiementListView, ConfirmerPaiementView, RembourserPaiementView,
-    NotificationListView, MarquerLueView, MarquerToutesLuesView, 
+    TelechargerRecuPaiementView, EnvoyerRecuEmailView,
+
+    # ── Notifications ─────────────────────────────────────────
+    NotificationListView, MarquerLueView, MarquerToutesLuesView,
+
+    # ── Calendrier & Statistiques ─────────────────────────────
     CalendrierView, StatistiquesAvanceesView,
-    TelechargerRecuPaiementView,
-    EnvoyerRecuEmailView,
-    UtilisateurDetailView,
-    CreerUtilisateurView,
-    ActiverDesactiverUtilisateurView,
-    
+    PersonnelParEntrepriseView,
+    ModifierPersonnelView,
 )
 
 
-
-
-
 urlpatterns = [
-    
 
-    #Gestions des utilisateurs par l'admin
-     # Dans urlpatterns — AVANT users/ pour éviter les conflits :
-     path('users/creer/',
-          CreerUtilisateurView.as_view(), name='creer-user'),
-     path('users/<int:user_id>/',
-          UtilisateurDetailView.as_view(), name='user-detail'),
-     path('users/<int:user_id>/activer/',
-          ActiverDesactiverUtilisateurView.as_view(), name='user-activer'),
+    # ==========================================================
+    #   UTILISATEURS
+    # ==========================================================
+    # IMPORTANT : les routes fixes (creer/, statistiques/) doivent
+    # être déclarées AVANT les routes dynamiques (<int:user_id>/)
+    # sinon Django interpréterait "creer" comme un user_id
 
-    # ── Utilisateurs ──────────────────────────────────────────
-    path('users/inscription/',
-         InscriptionView.as_view(), name='inscription'),
-    path('users/moi/',
-         MonProfilView.as_view(), name='mon-profil'),
-    path('users/',
-         UtilisateurListView.as_view(), name='liste-users'),
+    path('users/creer/',
+         CreerUtilisateurView.as_view(),            name='creer-user'),
     path('users/statistiques/',
-         StatistiquesView.as_view(), name='statistiques'),
+         StatistiquesView.as_view(),                name='statistiques'),
+    path('users/inscription/',
+         InscriptionView.as_view(),                 name='inscription'),
+    path('users/moi/',
+         MonProfilView.as_view(),                   name='mon-profil'),
+    path('users/',
+         UtilisateurListView.as_view(),             name='liste-users'),
 
-    # ── Domaines & Entreprises ────────────────────────────────
+    # Routes dynamiques APRÈS les routes fixes
+    path('users/<int:user_id>/activer/',
+         ActiverDesactiverUtilisateurView.as_view(), name='user-activer'),
+    path('users/<int:user_id>/',
+         UtilisateurDetailView.as_view(),           name='user-detail'),
+
+    # ==========================================================
+    #   DOMAINES & ENTREPRISES
+    # ==========================================================
+
     path('domaines/',
-         DomaineListView.as_view(), name='domaines'),
+         DomaineListView.as_view(),                 name='domaines'),
     path('entreprises/',
-         EntrepriseListView.as_view(), name='entreprises'),
+         EntrepriseListView.as_view(),              name='entreprises'),
     path('avis/',
-         AvisView.as_view(), name='avis'),
+         AvisView.as_view(),                        name='avis'),
 
-    # ── Créneaux ─────────────────────────────────────────────
-    # IMPORTANT : disponibles/ AVANT creneaux/ sinon conflit
+    # ==========================================================
+    #   SERVICES (NOUVEAU)
+    # ==========================================================
+    # Ordre important : services/<id>/personnels/ AVANT services/
+    # pour que Django ne confonde pas "personnels" avec un filtre
+
+    path('services/',
+         ServiceListView.as_view(),                 name='services'),
+    path('services/<int:service_id>/personnels/',
+         PersonnelParServiceView.as_view(),         name='service-personnels'),
+
+    # ==========================================================
+    #   CRÉNEAUX
+    # ==========================================================
+    # IMPORTANT : disponibles/ AVANT <int:...>/ pour éviter les conflits
+
     path('creneaux/disponibles/',
-         CreneauDisponiblesView.as_view(), name='creneaux-disponibles'),
+         CreneauDisponiblesView.as_view(),          name='creneaux-disponibles'),
     path('creneaux/',
-         CreneauListView.as_view(), name='creneaux'),
+         CreneauListView.as_view(),                 name='creneaux'),
 
-    # ── Rendez-vous ───────────────────────────────────────────
-    # IMPORTANT : tableau-de-bord/ AVANT <int:rdv_id>/
+    # Créneaux d'un personnel précis (NOUVEAU)
+    # Permet au client de voir les disponibilités avant de réserver
+    path('personnels/<int:personnel_id>/creneaux/',
+         CreneauxParPersonnelView.as_view(),        name='creneaux-par-personnel'),
+
+    # ==========================================================
+    #   RENDEZ-VOUS
+    # ==========================================================
+    # IMPORTANT : les routes fixes avant les routes dynamiques
+
     path('rendezvous/tableau-de-bord/',
-         TableauDeBordView.as_view(), name='rdv-dashboard'),
+         TableauDeBordView.as_view(),               name='rdv-dashboard'),
     path('rendezvous/',
-         RendezVousListView.as_view(), name='rdv-list'),
-    path('rendezvous/<int:rdv_id>/',
-         RendezVousDetailView.as_view(), name='rdv-detail'),
+         RendezVousListView.as_view(),              name='rdv-list'),
     path('rendezvous/<int:rdv_id>/traiter/',
-         TraiterRendezVousView.as_view(), name='rdv-traiter'),
+         TraiterRendezVousView.as_view(),           name='rdv-traiter'),
     path('rendezvous/<int:rdv_id>/annuler/',
-         AnnulerRendezVousView.as_view(), name='rdv-annuler'),
+         AnnulerRendezVousView.as_view(),           name='rdv-annuler'),
+    path('rendezvous/<int:rdv_id>/',
+         RendezVousDetailView.as_view(),            name='rdv-detail'),
 
-    # ── Paiements ─────────────────────────────────────────────
-    path('paiements/',
-         PaiementListView.as_view(), name='paiements'),
+    # ==========================================================
+    #   PAIEMENTS
+    # ==========================================================
+    # Routes fixes (recu/, envoyer-recu/, confirmer/, rembourser/)
+    # AVANT la route dynamique racine
+
     path('paiements/<int:paiement_id>/confirmer/',
-         ConfirmerPaiementView.as_view(), name='paiement-confirmer'),
+         ConfirmerPaiementView.as_view(),           name='paiement-confirmer'),
     path('paiements/<int:paiement_id>/rembourser/',
-         RembourserPaiementView.as_view(), name='paiement-rembourser'),
+         RembourserPaiementView.as_view(),          name='paiement-rembourser'),
+    path('paiements/<int:paiement_id>/recu/',
+         TelechargerRecuPaiementView.as_view(),     name='recu-pdf'),
+    path('paiements/<int:paiement_id>/envoyer-recu/',
+         EnvoyerRecuEmailView.as_view(),            name='envoyer-recu'),
+    path('paiements/',
+         PaiementListView.as_view(),                name='paiements'),
 
-    # ── Notifications ─────────────────────────────────────────
-    path('notifications/',
-         NotificationListView.as_view(), name='notifications'),
+    # ==========================================================
+    #   NOTIFICATIONS
+    # ==========================================================
+    # tout-lire/ AVANT <int:notif_id>/lire/ pour éviter le conflit
+
     path('notifications/tout-lire/',
-         MarquerToutesLuesView.as_view(), name='notif-tout-lire'),
+         MarquerToutesLuesView.as_view(),           name='notif-tout-lire'),
     path('notifications/<int:notif_id>/lire/',
-         MarquerLueView.as_view(), name='notif-lire'),
+         MarquerLueView.as_view(),                  name='notif-lire'),
+    path('notifications/',
+         NotificationListView.as_view(),            name='notifications'),
 
-     # ___ Calendrier visuel_______________________________________
-     path('calendrier/', CalendrierView.as_view(), name='calendrier'),
+    # ==========================================================
+    #   CALENDRIER & STATISTIQUES
+    # ==========================================================
 
-     #______Statistiques avec graphique_______________
-     path('statistiques/avancees/',
-     StatistiquesAvanceesView.as_view(), name='stats-avancees'),
+    path('calendrier/',
+         CalendrierView.as_view(),                  name='calendrier'),
+    path('statistiques/avancees/',
+         StatistiquesAvanceesView.as_view(),        name='stats-avancees'),
 
-     # _____Telecharger le Recu de Paiement et Envoyer de Recu Email_____________
-     path('paiements/<int:paiement_id>/recu/',
-          TelechargerRecuPaiementView.as_view(), name='recu-pdf'),
-     path('paiements/<int:paiement_id>/envoyer-recu/',
-     EnvoyerRecuEmailView.as_view(), name='envoyer-recu'),
-
+     path('entreprises/<int:entreprise_id>/personnels/',
+          PersonnelParEntrepriseView.as_view(), name='entreprise-personnels'),
+     
+     path('personnels/<int:personnel_id>/',
+          ModifierPersonnelView.as_view(), name='modifier-personnel'),
 ]

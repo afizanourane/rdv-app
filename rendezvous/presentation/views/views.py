@@ -2,7 +2,12 @@
 rendezvous/presentation/views/views.py
 Permissions strictes par rôle
 """
-
+from rendezvous.infrastructure.django_models.models import (
+    UtilisateurModel, EntrepriseModel, CreneauModel,
+    RendezVousModel, PaiementModel, NotificationModel,
+    ServiceModel, PersonnelModel, 
+    ConversationModel, MessageModel,   # ← ajouter ces 2
+)
 from django.db import models
 from django.conf import settings
 
@@ -12,6 +17,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import BasePermission, IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView
+
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 from rendezvous.application.use_cases.use_cases import (
     InscriptionUseCase, InscriptionInput,
@@ -43,7 +50,7 @@ from rendezvous.presentation.serializers.serializers import (
     CreneauSerializer,
     RendezVousSerializer, CreerRendezVousSerializer, TraiterRendezVousSerializer,
     PaiementSerializer, InitierPaiementSerializer, ConfirmerPaiementSerializer,
-    NotificationSerializer,
+    NotificationSerializer,ServiceSerializer, PersonnelSerializer,
 )
 from rendezvous.domain.exceptions.exceptions import (
     EmailDejaUtilise, MotDePasseInvalide,
@@ -151,26 +158,63 @@ class InscriptionView(APIView):
 
 
 class MonProfilView(APIView):
-    """
-    GET /api/users/moi/  → Tout utilisateur connecté voit son profil
-    PUT /api/users/moi/  → Tout utilisateur connecté modifie son profil
-    """
     permission_classes = [IsAuthenticated]
+    parser_classes     = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request):
-        return Response(UtilisateurSerializer(request.user).data)
+        serializer = UtilisateurSerializer(
+            request.user, context={'request': request}
+        )
+        return Response(serializer.data)
 
     def put(self, request):
-        serializer = MettreAJourProfilSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=400)
-        repos = get_repos()
-        MettreAJourProfilUseCase(repos['utilisateur']).execute(
-            user_id=request.user.id, **serializer.validated_data
-        )
-        user = UtilisateurModel.objects.get(id=request.user.id)
-        return Response(UtilisateurSerializer(user).data)
+        # Mise à jour infos texte
+        user = request.user
+        user.nom       = request.data.get('nom',       user.nom)
+        user.prenom    = request.data.get('prenom',    user.prenom)
+        user.telephone = request.data.get('telephone', user.telephone)
+        user.save()
+        return Response(UtilisateurSerializer(user, context={'request': request}).data)
 
+    def patch(self, request):
+        """PATCH /api/users/moi/ — Upload photo uniquement"""
+        user  = request.user
+        photo = request.FILES.get('photo')
+
+        if not photo:
+            return Response({'erreur': 'Aucune photo fournie.'}, status=400)
+
+        # Valider type et taille
+        TYPES_AUTORISES = ['image/jpeg', 'image/png', 'image/webp']
+        if photo.content_type not in TYPES_AUTORISES:
+            return Response(
+                {'erreur': 'Format non supporté. Utilisez JPG, PNG ou WebP.'},
+                status=400
+            )
+        if photo.size > 5 * 1024 * 1024:  # 5 MB max
+            return Response(
+                {'erreur': 'La photo ne doit pas dépasser 5 MB.'},
+                status=400
+            )
+
+        # Supprimer l'ancienne photo
+        if user.photo:
+            try:
+                import os
+                if os.path.exists(user.photo.path):
+                    os.remove(user.photo.path)
+            except Exception:
+                pass
+
+        user.photo = photo
+        user.save()
+
+        return Response({
+            'message':   'Photo mise à jour !',
+            'photo_url': UtilisateurSerializer(
+                user, context={'request': request}
+            ).data.get('photo_url'),
+        })
 
 class UtilisateurListView(APIView):
     """
@@ -262,7 +306,157 @@ class EntrepriseListView(APIView):
         serializer.save()
         return Response(serializer.data, status=201)
 
+# =============================================================
+#   SERVICES
+# =============================================================
 
+class ServiceListView(APIView):
+    """
+    GET  /api/services/         → Tout utilisateur connecté
+         ?entreprise=ID         → Filtrer par entreprise
+         ?domaine=ID            → Filtrer par domaine
+         ?search=mot            → Recherche par nom de service
+
+    POST /api/services/         → ADMIN SEULEMENT
+         Crée un nouveau service pour une entreprise.
+    """
+    def get_permissions(self):
+        # GET : tout utilisateur connecté peut voir les services
+        # POST : réservé à l'admin
+        if self.request.method == 'POST':
+            return [EstAdmin()]
+        return [IsAuthenticated()]
+
+    def get(self, request):
+        # On part de tous les services actifs
+        # select_related('entreprise__domaine') : charge entreprise et domaine
+        # en une seule requête SQL au lieu de N requêtes
+        qs = ServiceModel.objects.filter(
+            est_actif=True
+        ).select_related('entreprise__domaine')
+
+        # Filtre par entreprise : ?entreprise=3
+        entreprise_id = request.query_params.get('entreprise')
+        if entreprise_id:
+            qs = qs.filter(entreprise_id=entreprise_id)
+
+        # Filtre par domaine : ?domaine=2
+        # navigue entreprise → domaine via le double underscore Django
+        domaine_id = request.query_params.get('domaine')
+        if domaine_id:
+            qs = qs.filter(entreprise__domaine_id=domaine_id)
+
+        # Recherche texte : ?search=consultation
+        # icontains = insensible à la casse
+        search = request.query_params.get('search')
+        if search:
+            qs = qs.filter(nom__icontains=search)
+
+        return Response(ServiceSerializer(qs, many=True).data)
+
+    def post(self, request):
+        # L'admin crée un service pour une entreprise
+        serializer = ServiceSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+
+        service = serializer.save()
+        return Response(ServiceSerializer(service).data, status=201)
+
+
+# =============================================================
+#   PERSONNEL PAR SERVICE (recherche client)
+# =============================================================
+
+class PersonnelParServiceView(APIView):
+    """
+    GET /api/services/{service_id}/personnels/
+    Retourne tous les personnels qui proposent ce service.
+    Le client utilise cet endpoint pour choisir un prestataire
+    après avoir cherché un type de service.
+
+    Exemple : client cherche "Consultation" → voit Dr. Dupont,
+    Dr. Martin, etc. avec leurs entreprises et créneaux disponibles.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, service_id):
+        # Vérifier que le service existe
+        try:
+            service = ServiceModel.objects.select_related(
+                'entreprise__domaine'
+            ).get(id=service_id, est_actif=True)
+        except ServiceModel.DoesNotExist:
+            return Response(
+                {'erreur': f'Service #{service_id} introuvable ou inactif.'},
+                status=404
+            )
+
+        # service.personnels.all() : relation ManyToMany inversée
+        # définie par related_name='personnels' dans PersonnelModel
+        # prefetch_related : charge les services de chaque personnel
+        # en une seule requête supplémentaire (évite le problème N+1)
+        personnels = service.personnels.select_related(
+            'utilisateur', 'entreprise__domaine', 'domaine'
+        ).prefetch_related('services_proposes')
+
+        return Response({
+            'service': ServiceSerializer(service).data,
+            # Liste de tous les personnels proposant ce service
+            'personnels': PersonnelSerializer(personnels, many=True).data,
+        })
+
+
+# =============================================================
+#   CRÉNEAUX PAR PERSONNEL
+# =============================================================
+
+class CreneauxParPersonnelView(APIView):
+    """
+    GET /api/personnels/{personnel_id}/creneaux/
+    Retourne les créneaux DISPONIBLES d'un personnel précis.
+    Le client utilise cet endpoint après avoir choisi un personnel
+    pour voir ses disponibilités avant de valider le RDV.
+
+    Filtre optionnel : ?date=2025-08-15 pour une date précise.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, personnel_id):
+        # Vérifier que le personnel existe
+        try:
+            personnel = PersonnelModel.objects.select_related(
+                'utilisateur', 'entreprise'
+            ).get(id=personnel_id)
+        except PersonnelModel.DoesNotExist:
+            return Response(
+                {'erreur': f'Personnel #{personnel_id} introuvable.'},
+                status=404
+            )
+
+        # Ne retourner que les créneaux disponibles de ce personnel
+        # select_related('plage') : charge la plage pour avoir la date
+        creneaux = CreneauModel.objects.filter(
+            personnel=personnel,
+            statut='disponible'      # seulement les créneaux libres
+        ).select_related('plage').order_by('plage__date_plage', 'heure_debut')
+
+        # Filtre optionnel par date : ?date=2025-08-15
+        date_filtre = request.query_params.get('date')
+        if date_filtre:
+            try:
+                from datetime import datetime
+                date_obj = datetime.strptime(date_filtre, '%Y-%m-%d').date()
+                # navigue creneau → plage → date_plage
+                creneaux = creneaux.filter(plage__date_plage=date_obj)
+            except ValueError:
+                # Date invalide → on ignore le filtre
+                pass
+
+        return Response({
+            'personnel': PersonnelSerializer(personnel).data,
+            'creneaux':  CreneauSerializer(creneaux, many=True).data,
+        })
 class AvisView(APIView):
     """
     POST /api/avis/ — CLIENT SEULEMENT
@@ -518,7 +712,6 @@ class RendezVousListView(APIView):
 
 
     def post(self, request):
-        # SEUL LE CLIENT peut prendre un RDV
         if request.user.role != 'client':
             return Response(
                 {
@@ -537,7 +730,7 @@ class RendezVousListView(APIView):
         except Exception:
             return Response({'erreur': 'Profil client introuvable.'}, status=400)
 
-        repos = get_repos()   # ← LIGNE MANQUANTE — ajouter ici
+        repos = get_repos()
 
         try:
             rdv = CreerRendezVousUseCase(
@@ -549,9 +742,25 @@ class RendezVousListView(APIView):
                 description=serializer.validated_data.get('description', ''),
             ))
 
-            # Retour simplifié — impossible de planter
+            # Si un service a été choisi, on l'attache au RDV
+            # et on fige le prix au moment de la demande (snapshot)
+            service_id = serializer.validated_data.get('service_id')
+            if service_id:
+                try:
+                    service = ServiceModel.objects.get(id=service_id, est_actif=True)
+                    rdv_model = RendezVousModel.objects.get(id=rdv.id)
+
+                    # On fige le prix actuel du service
+                    # Ce prix ne changera plus même si service.prix est modifié
+                    rdv_model.service      = service
+                    rdv_model.prix_snapshot = service.prix
+                    rdv_model.save()
+                except ServiceModel.DoesNotExist:
+                    # Service introuvable → on continue sans bloquer le RDV
+                    pass
+
             return Response({
-                'message': '🎉 Rendez-vous créé avec succès !',
+                'message': 'Rendez-vous créé avec succès !',
                 'id':      rdv.id,
                 'statut':  'en_attente',
                 'info':    'Un email de confirmation vous a été envoyé.',
@@ -563,7 +772,6 @@ class RendezVousListView(APIView):
             import logging
             logging.getLogger(__name__).error(f"Erreur création RDV: {e}", exc_info=True)
             return Response({'erreur': str(e)}, status=400)
-
            
 
 
@@ -591,47 +799,80 @@ class RendezVousDetailView(APIView):
 
         return Response(RendezVousSerializer(rdv).data)
 
-
 class TraiterRendezVousView(APIView):
     """
-    POST /api/rendezvous/{id}/traiter/ — ADMIN SEULEMENT
+    POST /api/rendezvous/{id}/traiter/
     Action : {"action": "confirmer"} ou {"action": "refuser", "motif_refus": "..."}
+    ADMIN ou PERSONNEL (uniquement ses propres RDV)
     """
-    permission_classes = [EstAdmin]
+    permission_classes = [EstAdminOuPersonnel]  # ← était EstAdmin
 
     def post(self, request, rdv_id):
         serializer = TraiterRendezVousSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
 
-        try:
-            admin = request.user.profil_admin
-        except Exception:
-            return Response({'erreur': 'Profil admin introuvable.'}, status=400)
+        action  = serializer.validated_data['action']
+        motif   = serializer.validated_data.get('motif_refus', '')
+        repos   = get_repos()
+        user_id = request.user.id
 
-        action = serializer.validated_data['action']
-        motif  = serializer.validated_data.get('motif_refus', '')
-        repos  = get_repos()
+        # Récupère le RDV pour vérifier les droits
+        try:
+            rdv_model = RendezVousModel.objects.select_related(
+                'creneau__personnel__utilisateur'
+            ).get(id=rdv_id)
+        except RendezVousModel.DoesNotExist:
+            return Response({'erreur': f'RDV #{rdv_id} introuvable.'}, status=404)
+
+        # Si c'est un personnel → vérifier que le RDV lui appartient
+        if request.user.role == 'personnel':
+            try:
+                personnel = request.user.profil_personnel
+                if rdv_model.creneau.personnel != personnel:
+                    return Response(
+                        {
+                            'erreur': 'Vous ne pouvez traiter que les RDV liés à vos créneaux.',
+                            'code':   'PERMISSION_REFUSEE',
+                        },
+                        status=403
+                    )
+            except Exception:
+                return Response({'erreur': 'Profil personnel introuvable.'}, status=400)
+
+        # Récupère l'ID admin (null si c'est un personnel qui traite)
+        try:
+            admin_id = request.user.profil_admin.id
+        except Exception:
+            # C'est un personnel qui traite — pas d'admin_id
+            admin_id = None
 
         try:
             if action == 'confirmer':
                 rdv = ConfirmerRendezVousUseCase(
                     repos['rdv'], repos['historique'],
                     repos['creneau'], repos['notif'],
-                ).execute(rdv_id, admin.id)
+                ).execute(rdv_id, admin_id, user_id=user_id)
+
+                # Débloquer le paiement quand le RDV est confirmé
+                rdv_model = RendezVousModel.objects.get(id=rdv.id)
+                rdv_model.paiement_autorise = True
+                rdv_model.save()
+
             else:
                 rdv = RefuserRendezVousUseCase(
                     repos['rdv'], repos['historique'], repos['notif'],
-                ).execute(rdv_id, admin.id, motif)
+                ).execute(rdv_id, admin_id, motif, user_id=user_id)
 
-            model = RendezVousModel.objects.prefetch_related('historique','documents').get(id=rdv.id)
+            model = RendezVousModel.objects.prefetch_related(
+                'historique', 'documents'
+            ).get(id=rdv.id)
             return Response(RendezVousSerializer(model).data)
+
         except RendezVousNonTrouve as e:
             return Response({'erreur': str(e)}, status=404)
         except Exception as e:
             return Response({'erreur': str(e)}, status=400)
-
-
 class AnnulerRendezVousView(APIView):
     """
     POST /api/rendezvous/{id}/annuler/ — CLIENT SEULEMENT
@@ -1719,9 +1960,10 @@ class EnvoyerRecuEmailView(APIView):
 
 class UtilisateurDetailView(APIView):
     """
-    GET    /api/users/{id}/  → Admin : voir un utilisateur
-    PUT    /api/users/{id}/  → Admin : modifier un utilisateur
-    DELETE /api/users/{id}/  → Admin : supprimer un utilisateur
+    GET    /api/users/{id}/         → Admin : voir un utilisateur
+    DELETE /api/users/{id}/         → Admin : supprimer
+    POST   /api/users/{id}/activer/ → Admin : activer/désactiver
+    PUT est SUPPRIMÉ — l'admin ne peut plus modifier les infos
     """
     permission_classes = [EstAdmin]
 
@@ -1737,58 +1979,11 @@ class UtilisateurDetailView(APIView):
             return Response({'erreur': 'Utilisateur introuvable.'}, status=404)
         return Response(UtilisateurSerializer(user).data)
 
-    def put(self, request, user_id):
-        user = self._get_user(user_id)
-        if not user:
-            return Response({'erreur': 'Utilisateur introuvable.'}, status=404)
-
-        # Champs modifiables par l'admin
-        nom        = request.data.get('nom',       user.nom)
-        prenom     = request.data.get('prenom',    user.prenom)
-        email      = request.data.get('email',     user.email)
-        telephone  = request.data.get('telephone', user.telephone)
-        role       = request.data.get('role',      user.role)
-        is_active  = request.data.get('is_active', user.is_active)
-
-        ROLES_VALIDES = ['client', 'personnel', 'admin']
-        if role not in ROLES_VALIDES:
-            return Response(
-                {'erreur': f'Rôle invalide. Valeurs acceptées : {ROLES_VALIDES}'},
-                status=400
-            )
-
-        # Vérifier unicité email
-        if email != user.email:
-            if UtilisateurModel.objects.filter(email=email).exclude(id=user_id).exists():
-                return Response({'erreur': 'Cet email est déjà utilisé.'}, status=400)
-
-        user.nom       = nom
-        user.prenom    = prenom
-        user.email     = email
-        user.telephone = telephone
-        user.role      = role
-        user.is_active = is_active
-        user.save()
-
-        # Réinitialiser le mot de passe si fourni
-        nouveau_mdp = request.data.get('nouveau_mot_de_passe')
-        if nouveau_mdp:
-            if len(nouveau_mdp) < 8:
-                return Response({'erreur': 'Mot de passe trop court (min 8 caractères).'}, status=400)
-            user.set_password(nouveau_mdp)
-            user.save()
-
-        return Response({
-            'message':     'Utilisateur mis à jour.',
-            'utilisateur': UtilisateurSerializer(user).data,
-        })
-
     def delete(self, request, user_id):
         user = self._get_user(user_id)
         if not user:
             return Response({'erreur': 'Utilisateur introuvable.'}, status=404)
 
-        # Empêcher l'admin de se supprimer lui-même
         if user.id == request.user.id:
             return Response(
                 {'erreur': 'Vous ne pouvez pas supprimer votre propre compte.'},
@@ -1796,11 +1991,91 @@ class UtilisateurDetailView(APIView):
             )
 
         email = user.email
-        user.delete()
-        return Response({
-            'message': f'Utilisateur {email} supprimé avec succès.',
-        })
 
+        try:
+            # Supprimer dans l'ordre pour éviter les contraintes FK
+            from rendezvous.infrastructure.django_models.models import (
+                NotificationModel, PaiementModel, RendezVousModel,
+                HistoriqueStatutModel, TokenResetModel, CodeOtpModel,
+                ClientModel, PersonnelModel, AdministrateurModel,
+                RappelModel,
+            )
+
+            # 1. Notifications
+            NotificationModel.objects.filter(destinataire=user).delete()
+
+            # 2. Tokens reset et OTP
+            TokenResetModel.objects.filter(utilisateur=user).delete()
+            try:
+                CodeOtpModel.objects.filter(utilisateur=user).delete()
+            except Exception:
+                pass
+
+            # 3. Selon le rôle
+            if user.role == 'client':
+                try:
+                    client = user.profil_client
+                    # Historiques des RDV du client
+                    HistoriqueStatutModel.objects.filter(
+                        rendezvous__client=client
+                    ).delete()
+                    # Paiements des RDV du client
+                    PaiementModel.objects.filter(
+                        rendezvous__client=client
+                    ).delete()
+                    # Rappels des RDV du client
+                    try:
+                        RappelModel.objects.filter(
+                            rendezvous__client=client
+                        ).delete()
+                    except Exception:
+                        pass
+                    # RDV du client
+                    RendezVousModel.objects.filter(client=client).delete()
+                    # Profil client
+                    client.delete()
+                except Exception:
+                    pass
+
+            elif user.role == 'personnel':
+                try:
+                    personnel = user.profil_personnel
+                    # Historiques des RDV liés aux créneaux du personnel
+                    from rendezvous.infrastructure.django_models.models import CreneauModel
+                    creneaux = CreneauModel.objects.filter(personnel=personnel)
+                    for creneau in creneaux:
+                        rdvs = RendezVousModel.objects.filter(creneau=creneau)
+                        for rdv in rdvs:
+                            HistoriqueStatutModel.objects.filter(rendezvous=rdv).delete()
+                            PaiementModel.objects.filter(rendezvous=rdv).delete()
+                            try:
+                                RappelModel.objects.filter(rendezvous=rdv).delete()
+                            except Exception:
+                                pass
+                        rdvs.delete()
+                    creneaux.delete()
+                    personnel.delete()
+                except Exception:
+                    pass
+
+            elif user.role == 'admin':
+                try:
+                    AdministrateurModel.objects.filter(utilisateur=user).delete()
+                except Exception:
+                    pass
+
+            # 4. Supprimer l'utilisateur
+            user.delete()
+
+            return Response({
+                'message': f'Utilisateur {email} et toutes ses données supprimés avec succès.'
+            })
+
+        except Exception as e:
+            return Response(
+                {'erreur': f'Impossible de supprimer : {str(e)}'},
+                status=400
+            )
 
 class CreerUtilisateurView(APIView):
     """
@@ -1890,3 +2165,352 @@ class ActiverDesactiverUtilisateurView(APIView):
             'is_active': user.is_active,
         })
 
+class PersonnelParEntrepriseView(APIView):
+    """
+    GET /api/entreprises/{entreprise_id}/personnels/
+    Retourne les personnels qui appartiennent à cette entreprise.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, entreprise_id):
+        from rendezvous.infrastructure.django_models.models import PersonnelModel
+        
+        # Filtre les personnels de cette entreprise précise
+        personnels = PersonnelModel.objects.filter(
+            entreprise_id=entreprise_id
+        ).select_related('utilisateur', 'entreprise', 'domaine').prefetch_related('services_proposes')
+
+        return Response({
+            'entreprise_id': entreprise_id,
+            'personnels': PersonnelSerializer(personnels, many=True).data,
+        })
+# Dans views.py
+class ModifierPersonnelView(APIView):
+    """
+    PATCH /api/personnels/{personnel_id}/
+    Assigne une entreprise et des services à un personnel.
+    Admin seulement.
+    """
+    permission_classes = [EstAdmin]
+
+    def patch(self, request, personnel_id):
+        from rendezvous.infrastructure.django_models.models import (
+            PersonnelModel, ServiceModel
+        )
+        try:
+            personnel = PersonnelModel.objects.get(id=personnel_id)
+        except PersonnelModel.DoesNotExist:
+            return Response({'erreur': 'Personnel introuvable.'}, status=404)
+
+        # Assigner entreprise
+        entreprise_id = request.data.get('entreprise_id')
+        if entreprise_id:
+            from rendezvous.infrastructure.django_models.models import EntrepriseModel
+            try:
+                entreprise = EntrepriseModel.objects.get(id=entreprise_id)
+                personnel.entreprise = entreprise
+            except EntrepriseModel.DoesNotExist:
+                return Response({'erreur': 'Entreprise introuvable.'}, status=404)
+        elif entreprise_id == None and 'entreprise_id' in request.data:
+            # Explicitement mis à null → détacher de l'entreprise
+            personnel.entreprise = None
+
+        # Assigner poste
+        poste = request.data.get('poste')
+        if poste:
+            personnel.poste = poste
+
+        personnel.save()
+
+        # Assigner services
+        services_ids = request.data.get('services_ids')
+        if services_ids is not None:
+            services = ServiceModel.objects.filter(id__in=services_ids, est_actif=True)
+            personnel.services_proposes.set(services)
+
+        return Response(PersonnelSerializer(personnel).data)
+# =============================================================
+#   CHAT — MESSAGERIE INTERNE
+# =============================================================
+
+class ConversationListView(APIView):
+    """
+    GET  /api/conversations/ → liste mes conversations
+    POST /api/conversations/ → créer une conversation
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        # Filtre les conversations selon le rôle
+        if user.role == 'client':
+            try:
+                client = user.profil_client
+                convs = ConversationModel.objects.filter(
+                    client=client
+                ).select_related(
+                    'rdv', 'client__utilisateur',
+                    'personnel__utilisateur', 'admin__utilisateur'
+                ).prefetch_related('messages')
+            except Exception:
+                return Response([], status=200)
+
+        elif user.role == 'personnel':
+            try:
+                personnel = user.profil_personnel
+                convs = ConversationModel.objects.filter(
+                    personnel=personnel
+                ).select_related(
+                    'rdv', 'client__utilisateur',
+                    'personnel__utilisateur', 'admin__utilisateur'
+                ).prefetch_related('messages')
+            except Exception:
+                return Response([], status=200)
+
+        elif user.role == 'admin':
+            try:
+                admin = user.profil_admin
+                convs = ConversationModel.objects.filter(
+                    admin=admin
+                ).select_related(
+                    'rdv', 'client__utilisateur',
+                    'personnel__utilisateur', 'admin__utilisateur'
+                ).prefetch_related('messages')
+            except Exception:
+                return Response([], status=200)
+        else:
+            return Response([], status=200)
+
+        data = []
+        for conv in convs:
+            # Dernier message
+            dernier_msg = conv.messages.last()
+            # Nombre de messages non lus
+            nb_non_lus = conv.messages.filter(
+                est_lu=False
+            ).exclude(expediteur=user).count()
+
+            data.append({
+                'id':               conv.id,
+                'type':             conv.type_conversation,
+                'rdv_id':           conv.rdv_id,
+                'date_modification': conv.date_modification.isoformat(),
+                'nb_non_lus':       nb_non_lus,
+                'dernier_message': {
+                    'contenu':    dernier_msg.contenu if dernier_msg else None,
+                    'date':       dernier_msg.date_envoi.isoformat() if dernier_msg else None,
+                    'expediteur': dernier_msg.expediteur.prenom if dernier_msg else None,
+                } if dernier_msg else None,
+                # Interlocuteur selon le rôle
+                'interlocuteur': self._get_interlocuteur(conv, user),
+            })
+
+        return Response(data)
+
+    def _get_interlocuteur(self, conv, user):
+        """Retourne les infos de l'interlocuteur."""
+        try:
+            if user.role == 'client':
+                p = conv.personnel.utilisateur
+                return {
+                    'nom':      f"{p.prenom} {p.nom}",
+                    'role':     'Personnel',
+                    'entreprise': conv.personnel.entreprise.nom_entreprise
+                    if conv.personnel.entreprise else None,
+                }
+            elif user.role == 'personnel':
+                if conv.type_conversation == 'client_personnel' and conv.client:
+                    c = conv.client.utilisateur
+                    return {'nom': f"{c.prenom} {c.nom}", 'role': 'Client'}
+                elif conv.admin:
+                    a = conv.admin.utilisateur
+                    return {'nom': f"{a.prenom} {a.nom}", 'role': 'Admin'}
+            elif user.role == 'admin':
+                p = conv.personnel.utilisateur
+                return {'nom': f"{p.prenom} {p.nom}", 'role': 'Personnel'}
+        except Exception:
+            pass
+        return {'nom': 'Inconnu', 'role': ''}
+
+    def post(self, request):
+        """Créer une nouvelle conversation."""
+        type_conv  = request.data.get('type', 'client_personnel')
+        rdv_id     = request.data.get('rdv_id')
+        personnel_id = request.data.get('personnel_id')
+
+        user = request.user
+
+        try:
+            personnel = PersonnelModel.objects.get(id=personnel_id)
+        except PersonnelModel.DoesNotExist:
+            return Response({'erreur': 'Personnel introuvable.'}, status=404)
+
+        if type_conv == 'client_personnel':
+            try:
+                client = user.profil_client
+            except Exception:
+                return Response({'erreur': 'Profil client introuvable.'}, status=400)
+
+            try:
+                rdv = RendezVousModel.objects.get(id=rdv_id)
+            except RendezVousModel.DoesNotExist:
+                return Response({'erreur': 'RDV introuvable.'}, status=404)
+
+            # Vérifie que le RDV appartient à ce client
+            if rdv.client != client:
+                return Response({'erreur': 'Non autorisé.'}, status=403)
+
+            # Créer ou récupérer la conversation existante
+            conv, created = ConversationModel.objects.get_or_create(
+                rdv=rdv,
+                client=client,
+                personnel=personnel,
+                defaults={'type_conversation': 'client_personnel'}
+            )
+
+        elif type_conv == 'admin_personnel':
+            try:
+                admin = user.profil_admin
+            except Exception:
+                return Response({'erreur': 'Profil admin introuvable.'}, status=400)
+
+            conv, created = ConversationModel.objects.get_or_create(
+                personnel=personnel,
+                admin=admin,
+                type_conversation='admin_personnel',
+                defaults={}
+            )
+        else:
+            return Response({'erreur': 'Type de conversation invalide.'}, status=400)
+
+        return Response({
+            'id':      conv.id,
+            'created': created,
+        }, status=201 if created else 200)
+
+
+class MessageListView(APIView):
+    """
+    GET  /api/conversations/{id}/messages/ → tous les messages
+    POST /api/conversations/{id}/messages/ → envoyer un message
+    """
+    permission_classes = [IsAuthenticated]
+
+    def _get_conv(self, conv_id, user):
+        """Récupère la conversation et vérifie les droits."""
+        try:
+            conv = ConversationModel.objects.get(id=conv_id)
+        except ConversationModel.DoesNotExist:
+            return None, Response({'erreur': 'Conversation introuvable.'}, status=404)
+
+        # Vérifier que l'utilisateur est participant
+        autorise = False
+        if user.role == 'client':
+            try:
+                autorise = conv.client == user.profil_client
+            except Exception:
+                pass
+        elif user.role == 'personnel':
+            try:
+                autorise = conv.personnel == user.profil_personnel
+            except Exception:
+                pass
+        elif user.role == 'admin':
+            try:
+                autorise = conv.admin == user.profil_admin
+            except Exception:
+                pass
+
+        if not autorise:
+            return None, Response({'erreur': 'Non autorisé.'}, status=403)
+
+        return conv, None
+
+    def get(self, request, conv_id):
+        conv, err = self._get_conv(conv_id, request.user)
+        if err:
+            return err
+
+        messages = conv.messages.select_related('expediteur').all()
+
+        # Marquer les messages reçus comme lus
+        messages.exclude(
+            expediteur=request.user
+        ).filter(est_lu=False).update(est_lu=True)
+
+        data = [{
+            'id':          m.id,
+            'contenu':     m.contenu,
+            'date_envoi':  m.date_envoi.isoformat(),
+            'est_lu':      m.est_lu,
+            'est_moi':     m.expediteur == request.user,
+            'expediteur': {
+                'id':    m.expediteur.id,
+                'nom':   f"{m.expediteur.prenom} {m.expediteur.nom}",
+                'role':  m.expediteur.role,
+            },
+        } for m in messages]
+
+        return Response(data)
+
+    def post(self, request, conv_id):
+        conv, err = self._get_conv(conv_id, request.user)
+        if err:
+            return err
+
+        contenu = request.data.get('contenu', '').strip()
+        if not contenu:
+            return Response({'erreur': 'Le message ne peut pas être vide.'}, status=400)
+
+        # Créer le message
+        msg = MessageModel.objects.create(
+            conversation=conv,
+            expediteur=request.user,
+            contenu=contenu,
+        )
+
+        # Mettre à jour la date de modification de la conversation
+        conv.save()
+
+        # Notifier l'interlocuteur
+        try:
+            interlocuteur = self._get_destinataire(conv, request.user)
+            if interlocuteur:
+                NotificationModel.objects.create(
+                    destinataire=interlocuteur,
+                    titre=f"💬 Nouveau message de {request.user.prenom}",
+                    message=contenu[:100] + ('...' if len(contenu) > 100 else ''),
+                    type_notification='systeme',
+                    est_lue=False,
+                )
+        except Exception:
+            pass
+
+        return Response({
+            'id':         msg.id,
+            'contenu':    msg.contenu,
+            'date_envoi': msg.date_envoi.isoformat(),
+            'est_moi':    True,
+            'expediteur': {
+                'id':   request.user.id,
+                'nom':  f"{request.user.prenom} {request.user.nom}",
+                'role': request.user.role,
+            },
+        }, status=201)
+
+    def _get_destinataire(self, conv, expediteur):
+        """Retourne l'utilisateur destinataire du message."""
+        try:
+            if conv.type_conversation == 'client_personnel':
+                if expediteur.role == 'client':
+                    return conv.personnel.utilisateur
+                else:
+                    return conv.client.utilisateur
+            elif conv.type_conversation == 'admin_personnel':
+                if expediteur.role == 'admin':
+                    return conv.personnel.utilisateur
+                else:
+                    return conv.admin.utilisateur
+        except Exception:
+            return None    

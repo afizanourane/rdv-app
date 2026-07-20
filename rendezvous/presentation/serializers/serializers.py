@@ -19,7 +19,7 @@ from rendezvous.infrastructure.django_models.models import (
     DomaineModel, EntrepriseModel, AvisModel,
     PlageCreneauModel, CreneauModel,
     RendezVousModel, HistoriqueStatutModel, DocumentModel,
-    PaiementModel, NotificationModel,
+    PaiementModel, NotificationModel, ServiceModel,
 )
 
 
@@ -72,22 +72,38 @@ class InscriptionSerializer(serializers.Serializer):
         default='client'
     )
 
-
 class UtilisateurSerializer(serializers.ModelSerializer):
-    """Affiche les informations d'un utilisateur (sans mot de passe)."""
-    nom_complet = serializers.SerializerMethodField()
+    photo_url    = serializers.SerializerMethodField()
+    nom_complet  = serializers.SerializerMethodField()  # ← ajouter ça
+    profil_personnel_id = serializers.SerializerMethodField()
 
     class Meta:
         model  = UtilisateurModel
         fields = [
-            'id', 'nom', 'prenom', 'nom_complet',
-            'email', 'telephone', 'role', 'is_active', 'date_joined'
+            'id', 'nom', 'prenom', 'nom_complet', 'email',
+            'telephone', 'role', 'is_active', 'date_joined',
+            'photo', 'photo_url', 'deux_fa_active',
+            'profil_personnel_id',  # ← AJOUTER
         ]
-        read_only_fields = ['date_joined']
-
+        extra_kwargs = {
+            'photo': {'required': False, 'allow_null': True},
+        }
+    def get_profil_personnel_id(self, obj):
+        # Retourne l'ID du profil PersonnelModel si l'utilisateur est personnel
+        try:
+            return obj.profil_personnel.id
+        except Exception:
+            return None
     def get_nom_complet(self, obj):
-        return f"{obj.prenom} {obj.nom}"
+        return f"{obj.prenom} {obj.nom}".strip()
 
+    def get_photo_url(self, obj):
+        if obj.photo:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.photo.url)
+            return f"http://127.0.0.1:8000{obj.photo.url}"
+        return None
 
 class MettreAJourProfilSerializer(serializers.Serializer):
     """Valide les données de mise à jour du profil."""
@@ -105,12 +121,53 @@ class ClientSerializer(serializers.ModelSerializer):
 
 
 class PersonnelSerializer(serializers.ModelSerializer):
+    """
+    Serializer enrichi du Personnel.
+    Inclut ses services proposés et son entreprise
+    pour que le client puisse choisir un personnel
+    en connaissant exactement ce qu'il propose.
+    """
     utilisateur = UtilisateurSerializer(read_only=True)
+
+    # SerializerMethodField : calcule une valeur à partir de l'objet
+    # ici on appelle get_services_proposes() défini ci-dessous
+    services_proposes = serializers.SerializerMethodField()
+
+    # Nom lisible de l'entreprise (null si personnel indépendant)
+    entreprise_nom = serializers.CharField(
+        source='entreprise.nom_entreprise',
+        read_only=True,
+        default=None    # null si le personnel n'a pas d'entreprise
+    )
+
+    # Nom du domaine via entreprise → domaine
+    domaine_nom = serializers.CharField(
+        source='domaine.nom_domaine',
+        read_only=True,
+        default=None
+    )
 
     class Meta:
         model  = PersonnelModel
-        fields = ['id', 'utilisateur', 'poste', 'entreprise', 'domaine']
+        fields = [
+            'id',
+            'utilisateur',
+            'poste',
+            'entreprise',      # ID de l'entreprise
+            'entreprise_nom',  # nom lisible
+            'domaine',         # ID du domaine
+            'domaine_nom',     # nom lisible
+            'services_proposes', # liste des services que ce personnel propose
+        ]
 
+    def get_services_proposes(self, obj):
+        """
+        Retourne la liste des services proposés par ce personnel.
+        On réutilise ServiceSerializer pour avoir prix + durée + nom.
+        """
+        # obj.services_proposes.all() → QuerySet des services ManyToMany
+        services = obj.services_proposes.filter(est_actif=True)
+        return ServiceSerializer(services, many=True).data
 
 # =============================================================
 #   DOMAINE ET ENTREPRISE
@@ -147,7 +204,45 @@ class AvisSerializer(serializers.ModelSerializer):
         model  = AvisModel
         fields = ['id', 'entreprise', 'client', 'note', 'commentaire', 'date_avis']
         read_only_fields = ['date_avis', 'client']
+# =============================================================
+#   SERVICE
+# =============================================================
 
+class ServiceSerializer(serializers.ModelSerializer):
+    """
+    Serializer du modèle Service.
+    Affiche le nom de l'entreprise en plus de son ID
+    pour que le frontend n'ait pas à faire une deuxième requête.
+    """
+    # source='entreprise.nom_entreprise' : navigue la FK automatiquement
+    # read_only=True : ce champ est calculé, pas envoyé par le client
+    entreprise_nom = serializers.CharField(
+        source='entreprise.nom_entreprise',
+        read_only=True
+    )
+
+    # Idem pour le domaine via entreprise → domaine
+    domaine_nom = serializers.CharField(
+        source='entreprise.domaine.nom_domaine',
+        read_only=True
+    )
+
+    class Meta:
+        model  = ServiceModel
+        fields = [
+            'id',
+            'nom',
+            'description',
+            'prix',            # le prix affiché au client avant réservation
+            'duree_minutes',   # durée estimée — utile pour l'affichage calendrier
+            'entreprise',      # ID de l'entreprise (pour les filtres)
+            'entreprise_nom',  # nom lisible de l'entreprise
+            'domaine_nom',     # domaine de l'entreprise
+            'est_actif',       # si False, le service n'est pas proposé
+            'date_creation',
+        ]
+        # date_creation est générée automatiquement, jamais envoyée par le client
+        read_only_fields = ['date_creation']
 
 # =============================================================
 #   CRÉNEAU
@@ -168,11 +263,67 @@ class PlageCreneauSerializer(serializers.ModelSerializer):
 
 
 class CreneauSerializer(serializers.ModelSerializer):
+    # Date de la plage
+    date = serializers.DateField(
+        source='plage.date_plage',
+        read_only=True,
+        default=None
+    )
+    # Jour lisible en français
+    jour_semaine = serializers.SerializerMethodField()
+
+    # Nom complet du personnel
+    personnel_nom = serializers.SerializerMethodField()
+
+    # Entreprise du personnel
+    entreprise_nom = serializers.SerializerMethodField()
+
+    # Domaine du personnel
+    domaine_nom = serializers.SerializerMethodField()
+
     class Meta:
         model  = CreneauModel
-        fields = ['id', 'personnel', 'heure_debut', 'heure_fin', 'statut', 'plage']
+        fields = [
+            'id', 'personnel', 'heure_debut', 'heure_fin',
+            'statut', 'plage',
+            'date',
+            'jour_semaine',
+            'personnel_nom',   # ← NOUVEAU
+            'entreprise_nom',  # ← NOUVEAU
+            'domaine_nom',     # ← NOUVEAU
+        ]
 
+    def get_jour_semaine(self, obj):
+        if not obj.plage or not obj.plage.date_plage:
+            return None
+        JOURS = ['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche']
+        MOIS  = ['jan','fév','mar','avr','mai','juin','juil','août','sep','oct','nov','déc']
+        d = obj.plage.date_plage
+        return f"{JOURS[d.weekday()]} {d.day} {MOIS[d.month - 1]}"
 
+    def get_personnel_nom(self, obj):
+        try:
+            u = obj.personnel.utilisateur
+            return f"{u.prenom} {u.nom}"
+        except Exception:
+            return None
+
+    def get_entreprise_nom(self, obj):
+        try:
+            return obj.personnel.entreprise.nom_entreprise
+        except Exception:
+            return None
+
+    def get_domaine_nom(self, obj):
+        try:
+            # Domaine via entreprise ou domaine direct du personnel
+            if obj.personnel.entreprise:
+                return obj.personnel.entreprise.domaine.nom_domaine
+            if obj.personnel.domaine:
+                return obj.personnel.domaine.nom_domaine
+            return None
+        except Exception:
+            return None
 # =============================================================
 #   RENDEZ-VOUS
 # =============================================================
@@ -195,19 +346,46 @@ class RendezVousSerializer(serializers.ModelSerializer):
     client_nom     = serializers.SerializerMethodField()
     statut_display = serializers.SerializerMethodField()
     traite_par_nom = serializers.SerializerMethodField()
+    service_nom    = serializers.CharField(source='service.nom', read_only=True, default=None)
+    service_prix   = serializers.DecimalField(source='service.prix', max_digits=10, decimal_places=2, read_only=True, default=None)
+    personnel_nom  = serializers.SerializerMethodField()
+    entreprise_nom = serializers.SerializerMethodField()
+    # Infos du créneau
+    creneau_heure_debut = serializers.SerializerMethodField()
+    creneau_heure_fin   = serializers.SerializerMethodField()
+    creneau_date        = serializers.SerializerMethodField()
+    creneau_jour        = serializers.SerializerMethodField()
+        # Dans RendezVousSerializer
+    personnel_profil_id = serializers.SerializerMethodField()
 
+    # Dans fields
+    'personnel_profil_id',
+
+    # Méthode
+    def get_personnel_profil_id(self, obj):
+        try:
+            return obj.creneau.personnel.id
+        except Exception:
+            return None
+    
     class Meta:
         model  = RendezVousModel
         fields = [
             'id', 'client', 'client_nom', 'creneau',
-            'confirmation', 'statut', 'statut_display',
+            'service', 'service_nom', 'service_prix', 'prix_snapshot',
+            'paiement_autorise', 'confirmation', 'statut', 'statut_display',
             'description', 'date_creation', 'date_modification',
             'traite_par', 'traite_par_nom', 'motif_refus',
+            'personnel_nom', 'entreprise_nom',
             'historique', 'documents',
+            'creneau_heure_debut', 'creneau_heure_fin',
+            'creneau_date', 'creneau_jour',
+            'personnel_profil_id',
         ]
         read_only_fields = [
             'confirmation', 'statut', 'date_creation',
             'date_modification', 'traite_par', 'motif_refus',
+            'prix_snapshot', 'paiement_autorise',
         ]
 
     def get_client_nom(self, obj):
@@ -233,6 +411,49 @@ class RendezVousSerializer(serializers.ModelSerializer):
         except Exception:
             return None
 
+    def get_personnel_nom(self, obj):
+        try:
+            p = obj.creneau.personnel.utilisateur
+            return f"{p.prenom} {p.nom}"
+        except Exception:
+            return None
+
+    def get_entreprise_nom(self, obj):
+        try:
+            return obj.creneau.personnel.entreprise.nom_entreprise
+        except Exception:
+            return None
+        
+    def get_creneau_heure_debut(self, obj):
+        try:
+            return obj.creneau.heure_debut.strftime('%H:%M')
+        except Exception:
+            return None
+
+    def get_creneau_heure_fin(self, obj):
+        try:
+            return obj.creneau.heure_fin.strftime('%H:%M')
+        except Exception:
+            return None
+
+    def get_creneau_date(self, obj):
+        try:
+            if obj.creneau.plage and obj.creneau.plage.date_plage:
+                return obj.creneau.plage.date_plage.strftime('%d/%m/%Y')
+            return None
+        except Exception:
+            return None
+
+    def get_creneau_jour(self, obj):
+        try:
+            if obj.creneau.plage and obj.creneau.plage.date_plage:
+                JOURS = ['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche']
+                MOIS  = ['jan','fév','mar','avr','mai','juin','juil','août','sep','oct','nov','déc']
+                d = obj.creneau.plage.date_plage
+                return f"{JOURS[d.weekday()]} {d.day} {MOIS[d.month-1]}"
+            return None
+        except Exception:
+            return None 
 class CreerRendezVousSerializer(serializers.Serializer):
     """Valide les données de création d'un rendez-vous."""
     creneau_id  = serializers.IntegerField()
@@ -291,3 +512,18 @@ class NotificationSerializer(serializers.ModelSerializer):
             'id', 'titre', 'message', 'type_notification',
             'est_lue', 'date_creation', 'date_lecture'
         ]
+class CreerRendezVousSerializer(serializers.Serializer):
+    """
+    Valide les données de création d'un rendez-vous.
+    Le client envoie : creneau_id + service_id + description.
+    Le service_id est optionnel pour compatibilité avec l'existant.
+    """
+    creneau_id  = serializers.IntegerField()
+
+    # service_id : l'ID du service choisi parmi ceux du personnel
+    # required=False : compatibilité avec anciens RDV sans service
+    service_id  = serializers.IntegerField(required=False, allow_null=True)
+
+    description = serializers.CharField(
+        required=False, default='', allow_blank=True
+    )
