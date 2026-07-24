@@ -94,7 +94,9 @@ class LoginView(APIView):
             otp = CodeOtpModel.objects.create(
                 utilisateur=user,
                 date_expiration=timezone.now() + timedelta(minutes=10),
+                
             )
+            print(f"CODE OTP pour {user.email} : {otp.code}")
 
             # Envoyer par email
             send_mail(
@@ -117,7 +119,7 @@ class LoginView(APIView):
     <div style="background:#f0f4ff;border:2px dashed #6366f1;border-radius:12px;padding:20px;margin:20px 0">
       <span style="font-size:36px;font-weight:900;color:#6366f1;letter-spacing:12px">{otp.code}</span>
     </div>
-    <p style="color:#9ca3af;font-size:12px">⏰ Expire dans <strong>10 minutes</strong></p>
+    <p style="color:#9ca3af;font-size:12px"> Expire dans <strong>10 minutes</strong></p>
     <p style="color:#ef4444;font-size:12px">⚠️ Ne partagez jamais ce code.</p>
   </div>
 </div>""",

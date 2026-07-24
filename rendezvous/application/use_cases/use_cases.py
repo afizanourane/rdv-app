@@ -375,7 +375,7 @@ class CreerRendezVousUseCase:
             for admin in admins:
                 NotificationModel.objects.create(
                     destinataire=admin,
-                    titre=f"📅 Nouveau RDV #{rdv.id} en attente",
+                    titre=f"Nouveau RDV #{rdv.id} en attente",
                     message="Un client vient de créer un rendez-vous en attente de confirmation.",
                     type_notification='rendezvous',
                     est_lue=False,

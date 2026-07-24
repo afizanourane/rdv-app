@@ -36,6 +36,11 @@ from rendezvous.presentation.views.views import (
     CalendrierView, StatistiquesAvanceesView,
     PersonnelParEntrepriseView,
     ModifierPersonnelView,
+
+    # ── Messagerie ────────────────────────────────────────────
+    ConversationListView,
+    MessageListView,
+    ServiceDetailView,
 )
 
 
@@ -161,4 +166,17 @@ urlpatterns = [
      
      path('personnels/<int:personnel_id>/',
           ModifierPersonnelView.as_view(), name='modifier-personnel'),
+
+    # ==========================================================
+    #   MESSAGERIE
+    # ==========================================================
+
+   
+    path('conversations/',
+         ConversationListView.as_view(), name='conversations'),
+    path('conversations/<int:conv_id>/messages/',
+         MessageListView.as_view(), name='conv-messages'),   
+
+     path('services/<int:service_id>/',
+     ServiceDetailView.as_view(), name='service-detail'),
 ]

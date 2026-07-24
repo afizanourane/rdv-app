@@ -697,7 +697,7 @@ with transaction.atomic():
 
             destinataire=rdv.client.utilisateur,
 
-            titre="📅 Rendez-vous",
+            titre="Rendez-vous",
 
             message=f"Votre rendez-vous #{rdv.id} a été enregistré.",
 

@@ -2432,10 +2432,10 @@ class MessageListView(APIView):
         if err:
             return err
 
-        messages = conv.messages.select_related('expediteur').all()
+        messages = list(conv.messages.select_related('expediteur').all())
 
         # Marquer les messages reçus comme lus
-        messages.exclude(
+        conv.messages.exclude(
             expediteur=request.user
         ).filter(est_lu=False).update(est_lu=True)
 
@@ -2443,7 +2443,7 @@ class MessageListView(APIView):
             'id':          m.id,
             'contenu':     m.contenu,
             'date_envoi':  m.date_envoi.isoformat(),
-            'est_lu':      m.est_lu,
+            'est_lu':      m.est_lu if m.expediteur == request.user else True,
             'est_moi':     m.expediteur == request.user,
             'expediteur': {
                 'id':    m.expediteur.id,
@@ -2514,3 +2514,19 @@ class MessageListView(APIView):
                     return conv.admin.utilisateur
         except Exception:
             return None    
+        
+class ServiceDetailView(APIView):
+    """PATCH /api/services/{id}/ — Modifier un service"""
+    permission_classes = [EstAdmin]
+
+    def patch(self, request, service_id):
+        try:
+            service = ServiceModel.objects.get(id=service_id)
+        except ServiceModel.DoesNotExist:
+            return Response({'erreur': 'Service introuvable.'}, status=404)
+
+        serializer = ServiceSerializer(service, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+        serializer.save()
+        return Response(serializer.data)

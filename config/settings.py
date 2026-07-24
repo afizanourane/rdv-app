@@ -227,23 +227,19 @@ Toutes les routes (sauf inscription et login) nécessitent un token JWT.
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 
+
+
 # =============================================================
 #   CONFIGURATION EMAIL
 # =============================================================
 
-# En développement : les emails s'affichent dans le terminal
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-
-# En production : utiliser un vrai serveur SMTP
-# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-# EMAIL_HOST        = 'smtp.gmail.com'
-# EMAIL_PORT        = 587
-# EMAIL_USE_TLS     = True
-# EMAIL_HOST_USER   = 'ton_email@gmail.com'
-# EMAIL_HOST_PASSWORD = 'ton_mot_de_passe_application'
-# DEFAULT_FROM_EMAIL  = 'Rendez-vous App <ton_email@gmail.com>'
-
-DEFAULT_FROM_EMAIL = 'Rendez-vous App <noreply@rendezvous.cm>'
+EMAIL_BACKEND       = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST          = 'smtp.mail.me.com'
+EMAIL_PORT          = 587
+EMAIL_USE_TLS       = True
+EMAIL_HOST_USER     = 'afizanoura@icloud.com'
+EMAIL_HOST_PASSWORD = 'ayoc-eyif-jzrx-junu'
+DEFAULT_FROM_EMAIL  = 'RendezVous Pro <afizanoura@icloud.com>'
 
 
 

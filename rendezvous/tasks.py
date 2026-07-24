@@ -118,7 +118,7 @@ def _envoyer_email_rappel(rdv, client_email, client_nom, type_rappel, date_rdv):
     </p>
     <div class="rdv-card">
       <h3>📋 RDV #{rdv.id}</h3>
-      <div class="row"><span class="lbl">📅 Date</span><span class="val">{date_fr}</span></div>
+      <div class="row"><span class="lbl"> Date</span><span class="val">{date_fr}</span></div>
       <div class="row"><span class="lbl">🕐 Heure</span><span class="val">{heure_fr}</span></div>
       <div class="row"><span class="lbl">👤 Personnel</span><span class="val">{personnel_nom}</span></div>
       {f'<div class="row"><span class="lbl">📝 Objet</span><span class="val">{rdv.description}</span></div>' if rdv.description else ''}
