@@ -59,6 +59,7 @@ MIDDLEWARE = [
     # corsheaders DOIT être en premier
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -164,6 +165,7 @@ CORS_ALLOW_ALL_ORIGINS = True
 #   FICHIERS STATIQUES ET MÉDIAS
 # =============================================================
 STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = '/media/'
 # Les fichiers uploadés sont stockés dans rendezvous_project/media/
 MEDIA_ROOT = BASE_DIR / 'media'
