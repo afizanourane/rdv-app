@@ -18,6 +18,8 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 from pathlib import Path
 from datetime import timedelta
+import os
+import dj_database_url
 
 # BASE_DIR = le dossier racine de ton projet (rendezvous_project/)
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -94,14 +96,9 @@ WSGI_APPLICATION = 'config.wsgi.application'
 #   BASE DE DONNÉES POSTGRESQL
 # =============================================================
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'rendezvous_db',   # Nom de la base créée à l'étape 2
-        'USER': 'postgres',
-        'PASSWORD': '123',          # Ton mot de passe local
-        'HOST': 'localhost',
-        'PORT': '5432', #'5433pip install drf-spectacular',
-    }
+    'default': dj_database_url.config(
+        default=os.environ.get('DATABASE_URL')
+    )
 }
 
 # =============================================================
